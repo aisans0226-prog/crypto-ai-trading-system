@@ -69,7 +69,7 @@ class TrendStrategy:
                     return TradeSetup(
                         symbol=symbol, direction="LONG",
                         entry_price=c, stop_loss=stop, take_profit=tp,
-                        leverage=min(settings.max_leverage, 3),
+                        leverage=settings.max_leverage,
                         risk_reward=round(rr, 2),
                     )
 
@@ -90,7 +90,7 @@ class TrendStrategy:
                     return TradeSetup(
                         symbol=symbol, direction="SHORT",
                         entry_price=c, stop_loss=stop, take_profit=tp,
-                        leverage=min(settings.max_leverage, 3),
+                        leverage=settings.max_leverage,
                         risk_reward=round(rr, 2),
                     )
 
@@ -98,3 +98,22 @@ class TrendStrategy:
             logger.debug("TrendStrategy error ({}): {}", symbol, exc)
 
         return None
+
+    def regime_fit(self, df: pd.DataFrame) -> float:
+        """Higher when ADX confirms a strong directional trend."""
+        try:
+            high  = df["high"]
+            low   = df["low"]
+            close = df["close"]
+            adx   = ta.trend.ADXIndicator(high=high, low=low, close=close).adx().iloc[-1]
+            if adx >= 35:
+                return 0.95
+            if adx >= 28:
+                return 0.80
+            if adx >= 22:
+                return 0.60
+            if adx >= 16:
+                return 0.35
+            return 0.15
+        except Exception:
+            return 0.5

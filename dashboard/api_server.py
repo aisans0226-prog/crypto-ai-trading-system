@@ -5,6 +5,7 @@ No authentication required — open access on local/VPS network.
 import asyncio
 import json
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -16,7 +17,14 @@ from loguru import logger
 from config import settings
 import ai_engine.llm_analyzer as llm_analyzer
 
-app = FastAPI(title="Crypto AI Dashboard", version="2.0.0", docs_url="/docs")
+@asynccontextmanager
+async def lifespan(app_inst: "FastAPI"):
+    llm_analyzer.update_cfg(_ai_cfg)
+    asyncio.create_task(_realtime_loop())
+    yield
+
+
+app = FastAPI(title="Crypto AI Dashboard", version="2.0.0", docs_url="/docs", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])
 
@@ -28,6 +36,7 @@ class AppState:
     coin_ranker = None
     auto_updater = None
     coin_database = None          # CoinDatabase — per-coin learning stats
+    strategy_registry = None      # StrategyRegistry — auto strategy discovery
     recent_signals: List[dict] = []
     coin_rankings: List[dict] = []
     connected_ws: List[WebSocket] = []
@@ -256,6 +265,30 @@ async def get_research_log(limit: int = 50):
     return {"log": log}
 
 
+@app.get("/api/strategy-stats")
+async def get_strategy_stats():
+    """Per-strategy performance: win rate, PnL, recent trend, best strategy badge."""
+    if not state.coin_database:
+        return {"strategies": [], "best": None}
+    rows = await state.coin_database.get_strategy_stats()
+    # Determine best strategy: highest win_rate among those with ≥ 3 trades
+    qualified = [r for r in rows if r["total_trades"] >= 3]
+    best = max(qualified, key=lambda r: r["win_rate"])["name"] if qualified else None
+    # Also inject all registered strategy names with zero stats for new strategies
+    all_names: list = []
+    if state.strategy_registry:
+        all_names = state.strategy_registry.strategy_names()
+    existing = {r["name"] for r in rows}
+    for name in all_names:
+        if name not in existing:
+            rows.append({
+                "name": name, "total_trades": 0, "wins": 0, "losses": 0,
+                "win_rate": 0.0, "total_pnl": 0.0, "avg_pnl": 0.0,
+                "recent_pnl": [], "updated_at": None,
+            })
+    return {"strategies": rows, "best": best}
+
+
 # ---------------------------------------------------------------------------
 # AI LLM Integration endpoints
 # ---------------------------------------------------------------------------
@@ -479,13 +512,6 @@ async def _realtime_loop() -> None:
             await broadcast("positions", {"positions": positions, "exposure": exposure})
         except Exception as exc:
             logger.warning("Realtime broadcast error: {}", exc)
-
-
-@app.on_event("startup")
-async def _on_startup() -> None:
-    llm_analyzer.update_cfg(_ai_cfg)   # sync initial AI config into analyzer
-    asyncio.create_task(_realtime_loop())
-
 
 @app.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket):

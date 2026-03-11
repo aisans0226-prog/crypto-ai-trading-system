@@ -117,5 +117,8 @@ class Settings(BaseSettings):
     ai_model: str = ""                 # e.g. gpt-4o, claude-3-5-sonnet-20241022, gemini-1.5-pro
     ai_analysis_enabled: bool = False  # enable LLM-enhanced trade research
 
+    # Auto Strategy Discovery
+    strategy_discovery_enabled: bool = True  # if False, falls back to first-match (legacy)
+
 
 settings = Settings()

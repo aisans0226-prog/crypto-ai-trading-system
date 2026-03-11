@@ -53,9 +53,7 @@ from ml_models.prediction_model import EnsemblePredictor
 from ml_models.self_learning import SelfLearningEngine
 from ml_models.coin_ranker import CoinRanker
 
-from strategy.trend_strategy import TrendStrategy
-from strategy.breakout_strategy import BreakoutStrategy
-from strategy.liquidity_strategy import LiquidityStrategy
+from strategy.strategy_registry import StrategyRegistry
 
 from trading.risk_manager import RiskManager
 from trading.trade_executor import BinanceExecutor, BybitExecutor
@@ -127,12 +125,8 @@ class TradingSystem:
         # Bot on/off control (toggled via Telegram commands)
         self._bot_paused: bool = False
 
-        # Strategy stack
-        self._strategies = [
-            TrendStrategy(),
-            BreakoutStrategy(),
-            LiquidityStrategy(),
-        ]
+        # Strategy registry — auto-selects best strategy per trade (set in start())
+        self._strategy_registry: Optional[StrategyRegistry] = None
 
         # Exchange executors
         self._binance_exec = BinanceExecutor()
@@ -145,6 +139,7 @@ class TradingSystem:
         state.coin_ranker = self._ranker
         state.auto_updater = self._updater
         state.coin_database = self._coin_db
+        state.strategy_registry = None     # set after StrategyRegistry is initialised in start()
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
     async def start(self) -> None:
@@ -164,6 +159,8 @@ class TradingSystem:
         await self._binance_exec.start()
         await self._bybit_exec.start()
         self._research = ResearchEngine(self._data_engine, self._coin_db)
+        self._strategy_registry = StrategyRegistry(self._coin_db)
+        state.strategy_registry = self._strategy_registry
 
         # Fetch symbol list — may fail if exchange API is geo-blocked
         try:
@@ -333,9 +330,12 @@ class TradingSystem:
 
                     # ML prediction boost
                     try:
-                        df = await self._data_engine.get_klines_binance(
-                            signal.symbol, "15m", 200
-                        )
+                        df = self._klines_cache.get(signal.symbol)
+                        if df is None or len(df) < 50:
+                            df = await self._data_engine.get_klines_binance(
+                                signal.symbol, "15m", 200
+                            )
+                            self._klines_cache[signal.symbol] = df
                         ml_score, confidence = self._ml.predict(df)
                         signal.score += ml_score
                         signal.ai_prediction = confidence
@@ -344,7 +344,6 @@ class TradingSystem:
                         trade_id = f"{signal.symbol}_{int(now)}"
                         self._learner.record_prediction(trade_id, signal.symbol, df)
                         self._pending_labels[signal.symbol] = trade_id
-                        self._klines_cache[signal.symbol] = df
                     except Exception as exc:
                         logger.debug("ML predict error {}: {}", signal.symbol, exc)
 
@@ -494,16 +493,16 @@ class TradingSystem:
         if not self._risk.can_open_trade():
             return
 
-        # Strategy evaluation to get precise SL/TP
+        # Auto Strategy Discovery — evaluate all strategies and pick the best fit
         setup = None
+        strategy_name = None
         try:
             df = await self._data_engine.get_klines_binance(
                 signal.symbol, "15m", 200
             )
-            for strategy in self._strategies:
-                setup = strategy.evaluate(signal.symbol, df)
-                if setup:
-                    break
+            setup, strategy_name = await self._strategy_registry.select_best(
+                signal.symbol, df, signal.direction
+            )
         except Exception as exc:
             logger.debug("Strategy eval error {}: {}", signal.symbol, exc)
             return
@@ -574,9 +573,9 @@ class TradingSystem:
                 "signal_score":     signal.score,
             })
             if trade_id:
-                self._position_meta[risk_params.symbol] = self._make_position_meta(
-                    risk_params.entry_price
-                )
+                meta = self._make_position_meta(risk_params.entry_price)
+                meta["strategy_name"] = strategy_name
+                self._position_meta[risk_params.symbol] = meta
         else:
             # Live execution
             if self.exchange == "bybit":
@@ -599,11 +598,13 @@ class TradingSystem:
                     "signal_score":     signal.score,
                 })
                 if trade_id:
-                    self._position_meta[risk_params.symbol] = self._make_position_meta(
+                    meta = self._make_position_meta(
                         risk_params.entry_price,
                         sl_order_id=result.get("sl_order_id"),
                         tp_order_id=result.get("tp_order_id"),
                     )
+                    meta["strategy_name"] = strategy_name
+                    self._position_meta[risk_params.symbol] = meta
 
         if trade_id and research_id:
             # Link research decision to the actual trade for outcome tracking
@@ -700,7 +701,9 @@ class TradingSystem:
                 for sym in closed_symbols:
                     trade_id = self._pending_labels.pop(sym, None)
                     if trade_id:
-                        # Use PnL from the last known snapshot of the closed position
+                        # Fallback: teardown via _position_monitor_loop already consumed
+                        # the label normally. If somehow it was missed, label with 0.0
+                        # (in-memory position snapshot does not track pnl_usdt).
                         prev_data = self._prev_open_positions.get(sym, {})
                         pnl = prev_data.get("pnl_usdt", 0.0)
                         self._learner.label_trade(trade_id, pnl)
@@ -836,6 +839,7 @@ class TradingSystem:
         Callers are responsible for any Telegram alert and log message.
         """
         await self._portfolio.close_position(symbol, exit_price, pnl)
+        strategy_name = self._position_meta.get(symbol, {}).get("strategy_name")
         self._position_meta.pop(symbol, None)
         self._risk.record_trade_closed(pnl)   # update daily PnL for loss-limit guard
 
@@ -846,6 +850,10 @@ class TradingSystem:
         research_id = self._pending_research_ids.pop(symbol, None)
         if research_id:
             await self._coin_db.update_research_outcome(research_id, pnl)
+
+        # Persist strategy outcome for Auto Strategy Discovery learning
+        if strategy_name and self._strategy_registry:
+            await self._strategy_registry.record_outcome(strategy_name, pnl)
 
         self._risk.update_open_trades(len(await self._portfolio.get_open_positions()))
 

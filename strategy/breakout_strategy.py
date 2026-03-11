@@ -52,7 +52,7 @@ class BreakoutStrategy:
                         symbol=symbol, direction="LONG",
                         entry_price=c, stop_loss=round(stop, 6),
                         take_profit=round(tp, 6),
-                        leverage=min(settings.max_leverage, 3),
+                        leverage=settings.max_leverage,
                         risk_reward=round(rr, 2),
                     )
 
@@ -66,7 +66,7 @@ class BreakoutStrategy:
                         symbol=symbol, direction="SHORT",
                         entry_price=c, stop_loss=round(stop, 6),
                         take_profit=round(tp, 6),
-                        leverage=min(settings.max_leverage, 3),
+                        leverage=settings.max_leverage,
                         risk_reward=round(rr, 2),
                     )
 
@@ -74,3 +74,28 @@ class BreakoutStrategy:
             logger.debug("BreakoutStrategy error ({}): {}", symbol, exc)
 
         return None
+
+    def regime_fit(self, df: pd.DataFrame) -> float:
+        """Higher when price is close to resistance/support with rising volume."""
+        try:
+            close  = df["close"]
+            high   = df["high"]
+            low    = df["low"]
+            volume = df["volume"]
+
+            resistance = high.iloc[-(self.LOOKBACK + 1):-1].max()
+            support    = low.iloc[-(self.LOOKBACK + 1):-1].min()
+            c          = close.iloc[-1]
+
+            dist_to_res = abs(c - resistance) / max(c, 1e-10)
+            dist_to_sup = abs(c - support)    / max(c, 1e-10)
+            # Proximity score: 1 = at the level, 0 = >5 % away
+            proximity   = 1.0 - min(min(dist_to_res, dist_to_sup), 0.05) / 0.05
+
+            avg_vol   = volume.rolling(20).mean().iloc[-1]
+            last_vol  = volume.iloc[-1]
+            vol_ratio = min(last_vol / max(avg_vol, 1), 3.0) / 3.0
+
+            return round(proximity * 0.60 + vol_ratio * 0.40, 4)
+        except Exception:
+            return 0.5

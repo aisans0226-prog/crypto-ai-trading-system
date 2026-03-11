@@ -58,6 +58,7 @@ class BinanceExecutor:
             data = await r.json()
             if r.status != 200:
                 logger.error("Binance API GET error {}: {}", r.status, data)
+                raise Exception(f"Binance API error {r.status}: {data.get('msg', 'unknown')}")
             return data
 
     async def _delete(self, path: str, params: dict) -> dict:
@@ -69,6 +70,7 @@ class BinanceExecutor:
             data = await r.json()
             if r.status != 200:
                 logger.error("Binance API DELETE error {}: {}", r.status, data)
+                raise Exception(f"Binance API error {r.status}: {data.get('msg', 'unknown')}")
             return data
 
     async def _post(self, path: str, params: dict) -> dict:
@@ -272,7 +274,6 @@ class BybitExecutor:
         ).hexdigest()
 
     async def _get(self, path: str, params: dict) -> dict:
-        import json as _json
         ts = str(int(time.time() * 1000))
         recv_window = "5000"
         params_str = "&".join(f"{k}={v}" for k, v in sorted(params.items()))

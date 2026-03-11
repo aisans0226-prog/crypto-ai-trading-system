@@ -8,7 +8,6 @@ import asyncio
 import json
 from datetime import datetime
 from typing import Dict, List, Optional
-from dataclasses import dataclass, field, asdict
 
 from loguru import logger
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
