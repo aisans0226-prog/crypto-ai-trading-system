@@ -2,7 +2,7 @@
 alerts/telegram_bot.py — Real-time trade alerts via Telegram and Discord.
 """
 import asyncio
-from typing import Optional
+from typing import Optional, Callable, Awaitable
 import aiohttp
 from loguru import logger
 
@@ -12,22 +12,82 @@ from scanners.market_scanner import SignalResult
 
 TELEGRAM_API = "https://api.telegram.org"
 
+# Type alias for async command handler: receives command string, returns None
+CommandHandler = Callable[[str], Awaitable[None]]
+
 
 class AlertSystem:
     """Sends HIGH PROBABILITY TRADE alerts to Telegram and/or Discord."""
 
     def __init__(self) -> None:
         self._session: Optional[aiohttp.ClientSession] = None
+        self._command_handler: Optional[CommandHandler] = None
+        self._poll_offset: int = 0          # Telegram getUpdates offset
+        self._poll_task: Optional[asyncio.Task] = None
+
+    def set_command_handler(self, handler: CommandHandler) -> None:
+        """Register async callback for incoming Telegram bot commands."""
+        self._command_handler = handler
 
     async def start(self) -> None:
         self._session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=10)
         )
+        # Start Telegram command polling if bot token is configured
+        if settings.telegram_bot_token and settings.telegram_chat_id:
+            self._poll_task = asyncio.create_task(self._poll_telegram_commands())
         logger.info("AlertSystem started")
 
     async def stop(self) -> None:
+        if self._poll_task:
+            self._poll_task.cancel()
         if self._session:
             await self._session.close()
+
+    # ── Telegram command polling ───────────────────────────────────────────
+    async def _poll_telegram_commands(self) -> None:
+        """Long-poll Telegram getUpdates to receive bot commands."""
+        logger.info("Telegram command listener started")
+        while True:
+            try:
+                url = f"{TELEGRAM_API}/bot{settings.telegram_bot_token}/getUpdates"
+                params = {
+                    "offset": self._poll_offset,
+                    "timeout": 30,
+                    "allowed_updates": ["message"],
+                }
+                async with self._session.get(
+                    url,
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=40),
+                ) as r:
+                    if r.status != 200:
+                        await asyncio.sleep(5)
+                        continue
+                    data = await r.json()
+
+                for update in data.get("result", []):
+                    self._poll_offset = update["update_id"] + 1
+                    msg = update.get("message", {})
+                    text = (msg.get("text") or "").strip()
+                    chat_id = str(msg.get("chat", {}).get("id", ""))
+
+                    # Security: only accept commands from the configured chat
+                    if chat_id != str(settings.telegram_chat_id):
+                        continue
+
+                    if text.startswith("/") and self._command_handler:
+                        cmd = text.split()[0].lstrip("/").lower()
+                        try:
+                            await self._command_handler(cmd)
+                        except Exception as exc:
+                            logger.error("Command handler error: {}", exc)
+
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.debug("Telegram poll error: {}", exc)
+                await asyncio.sleep(5)
 
     # ── Public entrypoint ─────────────────────────────────────────────────
     async def send_trade_signal(self, signal: SignalResult) -> None:
@@ -35,6 +95,79 @@ class AlertSystem:
         await asyncio.gather(
             self._send_telegram(message),
             self._send_discord(message),
+            return_exceptions=True,
+        )
+
+    async def send_watchlist_alert(self, signal: SignalResult, confirmations_needed: int) -> None:
+        """Stage 1: signal detected, added to watchlist for monitoring."""
+        msg = (
+            f"🔍 *SIGNAL DETECTED — Monitoring*\n\n"
+            f"Coin: `{signal.symbol}`\n"
+            f"Direction: *{signal.direction}*\n"
+            f"Score: *{signal.score}*\n"
+            f"Price: `{signal.price}`\n"
+            f"24h Change: `{signal.price_change_pct:+.2f}%`\n\n"
+            f"⏳ Watching for `{confirmations_needed}` more scan cycle(s) "
+            f"before deep research..."
+        )
+        await asyncio.gather(
+            self._send_telegram(msg),
+            self._send_discord(msg),
+            return_exceptions=True,
+        )
+
+    async def send_research_result(self, signal: SignalResult, result) -> None:
+        """Stage 2: deep research completed — passed or failed."""
+        if result.passed:
+            ok_lines  = "\n".join(f"  ✅ {r}" for r in result.reasons[:6])
+            header = f"📊 *RESEARCH PASSED* ✅ — Entering trade"
+        else:
+            ok_lines  = "\n".join(f"  ❌ {r}" for r in result.failed_reasons[:6])
+            header = f"❌ *RESEARCH FAILED* — Skipping trade"
+
+        msg = (
+            f"{header}\n\n"
+            f"Coin: `{signal.symbol}` | *{signal.direction}*\n"
+            f"Signal Score: *{signal.score}*\n"
+            f"Research Score: *{result.score:.1f}/10* | "
+            f"Confidence: *{result.confidence*100:.0f}%*\n"
+            f"MTF Alignment: *{result.mtf_alignment*100:.0f}%*\n\n"
+            f"{'Reasons:' if result.passed else 'Issues:'}\n{ok_lines}"
+        )
+        await asyncio.gather(
+            self._send_telegram(msg),
+            self._send_discord(msg),
+            return_exceptions=True,
+        )
+
+    async def send_trade_entry(
+        self,
+        symbol: str,
+        direction: str,
+        entry: float,
+        sl: float,
+        tp: float,
+        rr: float,
+        signal_score: int,
+        research_score: float,
+        daily_remaining: int,
+    ) -> None:
+        """Stage 3: trade is being executed — full entry details."""
+        sl_pct = abs(entry - sl) / entry * 100
+        tp_pct = abs(tp - entry) / entry * 100
+        msg = (
+            f"⚡ *ENTERING TRADE*\n\n"
+            f"Coin: `{symbol}` | *{direction}*\n"
+            f"Entry: `${entry:,.4f}`\n"
+            f"Stop Loss: `${sl:,.4f}` ({sl_pct:.2f}%)\n"
+            f"Take Profit: `${tp:,.4f}` ({tp_pct:.2f}%)\n"
+            f"Risk/Reward: *1:{rr:.1f}*\n\n"
+            f"Signal Score: *{signal_score}* | Research: *{research_score:.1f}/10*\n"
+            f"Trades left today: *{daily_remaining}*"
+        )
+        await asyncio.gather(
+            self._send_telegram(msg),
+            self._send_discord(msg),
             return_exceptions=True,
         )
 

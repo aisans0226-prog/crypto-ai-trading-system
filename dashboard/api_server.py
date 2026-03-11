@@ -26,6 +26,7 @@ class AppState:
     self_learner = None
     coin_ranker = None
     auto_updater = None
+    coin_database = None          # CoinDatabase — per-coin learning stats
     recent_signals: List[dict] = []
     coin_rankings: List[dict] = []
     connected_ws: List[WebSocket] = []
@@ -185,11 +186,49 @@ async def get_trades(limit: int = 100, status: str = "all"):
     }
     return {"trades": rows, "stats": stats}
 
+@app.get("/api/coin-stats")
+async def get_coin_stats(limit: int = 50):
+    """Top coins ranked by win rate from the self-learning database."""
+    if not state.coin_database:
+        return {"coins": [], "total": 0}
+    coins = await state.coin_database.get_top_coins(limit)
+    return {"coins": coins, "total": len(coins)}
+
+
+@app.get("/api/coin-stats/{symbol}")
+async def get_single_coin_stats(symbol: str):
+    """Full learning stats for one symbol."""
+    if not state.coin_database:
+        return {}
+    stats = await state.coin_database.get_coin_stats(symbol.upper())
+    return stats or {}
+
+
+@app.get("/api/research-log")
+async def get_research_log(limit: int = 50):
+    """Recent deep-research decisions (passed/failed + outcome when available)."""
+    if not state.coin_database:
+        return {"log": []}
+    log = await state.coin_database.get_recent_research(limit)
+    return {"log": log}
+
+
 @app.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket):
     await websocket.accept()
     state.connected_ws.append(websocket)
     logger.info("WS connected ({})", len(state.connected_ws))
+
+    # Push current state immediately so client doesn't wait up to 30s for first update
+    if state.portfolio_manager:
+        try:
+            metrics = await state.portfolio_manager.calculate_metrics()
+            await websocket.send_text(json.dumps({
+                "type": "metrics", "data": metrics, "ts": datetime.utcnow().isoformat()
+            }))
+        except Exception:
+            pass
+
     try:
         while True:
             try:

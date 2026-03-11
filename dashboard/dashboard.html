@@ -230,7 +230,7 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
       <span class="ct2">Live Signal Feed</span>
       <select id="sflt" onchange="rSig()" style="background:var(--bg3);color:var(--txt);border:1px solid var(--border);padding:3px 8px;border-radius:5px;font-size:.72rem">
         <option value="all">All signals</option>
-        <option value="high">Score &ge; 8</option>
+        <option value="high">Score &ge; 11</option>
         <option value="long">LONG only</option>
         <option value="short">SHORT only</option>
       </select>
@@ -348,7 +348,7 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
           <tr><td class="neu">Max leverage</td><td style="font-weight:600">3x</td></tr>
           <tr><td class="neu">Max open trades</td><td style="font-weight:600">5</td></tr>
           <tr><td class="neu">Min risk-reward</td><td style="font-weight:600">1 : 2</td></tr>
-          <tr><td class="neu">Signal threshold</td><td style="font-weight:600">Score &ge; 8</td></tr>
+          <tr><td class="neu">Signal threshold</td><td style="font-weight:600">Score &ge; 11</td></tr>
           <tr><td class="neu">Scan interval</td><td style="font-weight:600">60 seconds</td></tr>
         </tbody>
       </table>
@@ -419,7 +419,7 @@ function cwS(){
     var d=JSON.parse(e.data);
     lgC(d.type+': '+JSON.stringify(d.data||'').slice(0,70));
     if(d.type==='signal')lSD();
-    if(d.type==='metrics')uSt(d.data);
+    if(d.type==='metrics'){uSt(d.data);bPC(d.data);bWL(d.data);}
     if(d.type==='system_update')toast(d.data.message||'Updated',d.data.success?'ok':'err');
   };
   ws.onclose=function(){
@@ -483,8 +483,9 @@ function dRnk(){
 
 function bPC(m){
   var ctx=document.getElementById('pc');if(!ctx)return;if(pC)pC.destroy();
-  var lbs=Array.from({length:30},function(_,i){return 'T-'+(29-i);});
-  var dt=Array.from({length:30},function(){return (Math.random()-.4)*60;});
+  var trend=m&&m.pnl_trend&&m.pnl_trend.length?m.pnl_trend:[];
+  var lbs=trend.length?trend.map(function(t){return t.label;}):['No trades yet'];
+  var dt=trend.map(function(t){return t.pnl;});
   pC=new Chart(ctx,{type:'line',data:{labels:lbs,datasets:[{label:'PnL',data:dt,borderColor:'#00d4aa',backgroundColor:'rgba(0,212,170,.07)',fill:true,tension:.4,pointRadius:2}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{color:'rgba(255,255,255,.04)'},ticks:{color:'#64748b',maxTicksLimit:6}},y:{grid:{color:'rgba(255,255,255,.04)'},ticks:{color:'#64748b'}}}}});
 }
 
@@ -500,7 +501,7 @@ function rSig(){
   var el=document.getElementById('siglst');if(!el)return;
   var fv=document.getElementById('sflt');fv=fv?fv.value:'all';
   var s=[...aS].reverse();
-  if(fv==='high')s=s.filter(function(x){return x.score>=8;});
+  if(fv==='high')s=s.filter(function(x){return x.score>=11;});
   else if(fv==='long')s=s.filter(function(x){return x.direction==='LONG';});
   else if(fv==='short')s=s.filter(function(x){return x.direction==='SHORT';});
   el.innerHTML=s.length?s.slice(0,50).map(function(x){return sHTML(x,true);}).join(''):'<div style="color:var(--mut);padding:14px;text-align:center">No signals matching filter</div>';
@@ -573,7 +574,8 @@ async function lTr(){
 }
 
 async function lPf(){
-  var m=await ap('/api/metrics');
+  var a=await Promise.all([ap('/api/metrics'),ap('/api/trades?limit=200')]);
+  var m=a[0],td=a[1];
   var el=document.getElementById('pst');
   el.innerHTML=[
     ['Total Trades',m.total_trades||0,''],
@@ -583,6 +585,28 @@ async function lPf(){
     ['Max Drawdown','-'+(+(m.max_drawdown_pct||0)).toFixed(1)+'%','neg'],
     ['Daily PnL','$'+(+(m.daily_pnl||0)).toFixed(2),(m.daily_pnl||0)>=0?'pos':'neg'],
   ].map(function(x){return '<div class="sc"><div class="sl">'+x[0]+'</div><div class="sv '+x[2]+'">'+x[1]+'</div></div>';}).join('');
+  bCPC(td.trades||[]);
+  bPRC(m);
+}
+
+function bCPC(trades){
+  var ctx=document.getElementById('cpc');if(!ctx)return;if(cpC)cpC.destroy();
+  var closed=trades.filter(function(t){return t.status==='closed'&&t.closed_at;});
+  closed.sort(function(a,b){return new Date(a.closed_at)-new Date(b.closed_at);});
+  var labels=[],cum=[],acc=0;
+  closed.forEach(function(t){acc+=t.pnl_usdt||0;labels.push(new Date(t.closed_at).toLocaleDateString());cum.push(+acc.toFixed(2));});
+  if(!labels.length){labels=['No trades'];cum=[0];}
+  cpC=new Chart(ctx,{type:'line',data:{labels:labels,datasets:[{label:'Cumulative PnL',data:cum,borderColor:'#3b82f6',backgroundColor:'rgba(59,130,246,.07)',fill:true,tension:.4,pointRadius:2}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{color:'rgba(255,255,255,.04)'},ticks:{color:'#64748b',maxTicksLimit:8}},y:{grid:{color:'rgba(255,255,255,.04)'},ticks:{color:'#64748b'}}}}});
+}
+
+function bPRC(m){
+  var ctx=document.getElementById('prc');if(!ctx)return;if(prC)prC.destroy();
+  var wr=Math.min(+(m.win_rate||0),100);
+  var pf=Math.min((+(m.profit_factor||0))*20,100);
+  var dd=Math.max(0,100-Math.abs(+(m.max_drawdown_pct||0)));
+  var tt=Math.min((+(m.total_trades||0))*2,100);
+  var dp=Math.min(50+(+(m.daily_pnl||0)),100);
+  prC=new Chart(ctx,{type:'radar',data:{labels:['Win Rate','Profit Factor','DD Control','Activity','Daily PnL'],datasets:[{label:'Performance',data:[wr,pf,dd,tt,dp],borderColor:'#3b82f6',backgroundColor:'rgba(59,130,246,.1)',pointBackgroundColor:'#3b82f6',pointRadius:3}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{r:{grid:{color:'rgba(255,255,255,.06)'},angleLines:{color:'rgba(255,255,255,.06)'},ticks:{color:'#64748b',backdropColor:'transparent',maxTicksLimit:3},pointLabels:{color:'#94a3b8',font:{size:10}},min:0,max:100}}}});
 }
 
 async function lSy(){
@@ -631,13 +655,12 @@ async function rAll(){
 function rCharts(){ap('/api/metrics').then(function(m){bPC(m);bWL(m);});}
 
 (async function(){
-  await gJ();
   cwS();
   await lD();
   setInterval(async function(){
     var pg=document.querySelector('.page.active');
     var id=(pg?pg.id:'page-dashboard').replace('page-','');
-    if(id==='dashboard'){var m=await ap('/api/metrics');uSt(m);}
+    if(id==='dashboard'){var m=await ap('/api/metrics');uSt(m);bPC(m);bWL(m);}
     if(id==='signals')await lSD();
     if(id==='heatmap')await lHM();
     if(id==='trades')await lTr();

@@ -47,14 +47,22 @@ class Settings(BaseSettings):
     max_leverage: int = 3
     max_open_trades: int = 5
     min_risk_reward_ratio: float = 2.0
+    max_daily_trades: int = 3              # max trades bot can open per day
 
-    # AI Signal
-    signal_score_threshold: int = 8
+    # AI Signal — stricter quality gates
+    signal_score_threshold: int = 11       # raised from 8 → requires strong scanner score
+    min_ml_confidence: float = 0.60        # min ML confidence to confirm entry (when trained)
+    signal_cooldown_minutes: int = 30      # cool-off after watchlist decision (trade or skip)
+
+    # Watchlist / Research phase (confirm signal before researching)
+    watchlist_confirmations: int = 2       # scan cycles to monitor before deep research
+    research_min_score: float = 6.0        # deep research score gate (out of 10)
+    research_min_mtf_alignment: float = 0.67  # 2/3 timeframes must agree
 
     # Scanner
     scan_interval_seconds: int = 60
     max_coins_to_scan: int = 500
-    min_volume_usdt: float = 500_000.0
+    min_volume_usdt: float = 1_000_000.0   # raised from 500k → higher quality coins
 
     # Dashboard
     dashboard_host: str = "0.0.0.0"

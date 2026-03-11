@@ -6,7 +6,7 @@ Also caches real-time position data in Redis.
 """
 import asyncio
 import json
-from datetime import datetime, date
+from datetime import datetime
 from typing import Dict, List, Optional
 from dataclasses import dataclass, field, asdict
 
@@ -196,42 +196,66 @@ class PortfolioManager:
             )
             trades = result.scalars().all()
 
+        # Always return base metrics so dashboard and WS broadcast work from startup
+        base: dict = {
+            "total_trades": 0,
+            "win_rate": 0.0,
+            "profit_factor": 0.0,
+            "max_drawdown_pct": 0.0,
+            "daily_pnl": 0.0,
+            "total_pnl": 0.0,
+            "balance": self._balance,
+            "pnl_trend": [],
+        }
         if not trades:
-            return {}
+            return base
 
         pnls = [t.pnl_usdt for t in trades]
         wins = [p for p in pnls if p > 0]
         losses = [p for p in pnls if p <= 0]
 
-        win_rate = len(wins) / len(pnls) * 100 if pnls else 0
-        gross_profit = sum(wins) if wins else 0
-        gross_loss = abs(sum(losses)) if losses else 1
-        profit_factor = gross_profit / gross_loss if gross_loss else 0
+        win_rate = len(wins) / len(pnls) * 100
+        gross_profit = sum(wins) if wins else 0.0
+        gross_loss = abs(sum(losses)) if losses else 0.0
+        # Cap at 99.99 when no losses (avoids JSON serialization of float('inf'))
+        profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else (99.99 if gross_profit > 0 else 0.0)
 
-        # Max drawdown
+        # Max drawdown — peak starts at 0 (initial equity baseline)
         cumulative = [sum(pnls[:i+1]) for i in range(len(pnls))]
-        peak = cumulative[0]
-        max_dd = 0
+        peak = 0.0
+        max_dd = 0.0
         for val in cumulative:
             if val > peak:
                 peak = val
-            dd = (peak - val) / abs(peak) * 100 if peak != 0 else 0
+            dd = (peak - val) / abs(peak) * 100 if peak != 0 else 0.0
             max_dd = max(max_dd, dd)
 
-        today = date.today()
+        # Use UTC date to match UTC-stored closed_at timestamps
+        today_utc = datetime.utcnow().date()
         daily_pnl = sum(
             t.pnl_usdt for t in trades
-            if t.closed_at and t.closed_at.date() == today
+            if t.closed_at and t.closed_at.date() == today_utc
         )
+
+        # Last 30 closed trades sorted by close time — feeds the PnL trend chart
+        recent_30 = sorted(
+            [t for t in trades if t.closed_at],
+            key=lambda t: t.closed_at
+        )[-30:]
+        pnl_trend = [
+            {"label": t.symbol, "pnl": round(t.pnl_usdt, 2)}
+            for t in recent_30
+        ]
 
         return {
             "total_trades": len(trades),
             "win_rate": round(win_rate, 2),
-            "profit_factor": round(profit_factor, 2),
+            "profit_factor": profit_factor,
             "max_drawdown_pct": round(max_dd, 2),
             "daily_pnl": round(daily_pnl, 2),
             "total_pnl": round(sum(pnls), 2),
             "balance": self._balance,
+            "pnl_trend": pnl_trend,
         }
 
     async def get_risk_exposure(self) -> dict:

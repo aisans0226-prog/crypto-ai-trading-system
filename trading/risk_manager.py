@@ -5,11 +5,13 @@ Rules enforced:
   ✓ Risk per trade = 1 % account balance
   ✓ Maximum leverage = 3×
   ✓ Maximum open trades = 5
+  ✓ Maximum trades per day = 3 (configurable)
   ✓ Minimum risk-reward = 1:2
   ✓ Auto stop-loss and take-profit calculation
   ✓ Position-size calculation (USDT notional)
 """
 from dataclasses import dataclass
+from datetime import date
 from typing import Optional
 from loguru import logger
 
@@ -38,6 +40,8 @@ class RiskManager:
     def __init__(self) -> None:
         self._open_trades: int = 0
         self._account_balance: float = settings.account_balance_usdt
+        self._daily_trades: int = 0
+        self._daily_date: date = date.today()
 
     # ── Public ────────────────────────────────────────────────────────────
     def update_balance(self, balance: float) -> None:
@@ -46,11 +50,34 @@ class RiskManager:
     def update_open_trades(self, count: int) -> None:
         self._open_trades = count
 
+    def _reset_daily_if_needed(self) -> None:
+        today = date.today()
+        if today != self._daily_date:
+            self._daily_trades = 0
+            self._daily_date = today
+
+    def record_trade_opened(self) -> None:
+        """Call once per trade successfully opened."""
+        self._reset_daily_if_needed()
+        self._daily_trades += 1
+
+    @property
+    def daily_trades_remaining(self) -> int:
+        self._reset_daily_if_needed()
+        return max(0, settings.max_daily_trades - self._daily_trades)
+
     def can_open_trade(self) -> bool:
+        self._reset_daily_if_needed()
         if self._open_trades >= settings.max_open_trades:
             logger.warning(
                 "Max open trades reached ({}/{})",
                 self._open_trades, settings.max_open_trades,
+            )
+            return False
+        if self._daily_trades >= settings.max_daily_trades:
+            logger.warning(
+                "Daily trade limit reached ({}/{}). Resuming tomorrow.",
+                self._daily_trades, settings.max_daily_trades,
             )
             return False
         return True

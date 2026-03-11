@@ -10,6 +10,14 @@ Starts all subsystems concurrently:
   ✓ Alert system
   ✓ FastAPI dashboard
 
+Trade execution flow (new):
+  1. Scanner detects high-score signal → added to watchlist → Telegram alert
+  2. Signal must persist N scan cycles (watchlist_confirmations) → confirmation
+  3. After confirmation → ResearchEngine runs 15m/1h/4h multi-timeframe analysis
+  4. Research result sent to Telegram (passed/failed)
+  5. If passed → trade entry notification → execute trade
+  6. After trade close → CoinDatabase updated (win/loss stats for future learning)
+
 Usage:
     python main.py
     python main.py --exchange binance          # default
@@ -22,6 +30,8 @@ import sys
 import os
 import signal
 import time
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Dict, Optional
 
 import uvicorn
@@ -35,8 +45,10 @@ from utils.logger import setup_logger
 
 from data_engine.market_data import MarketDataEngine
 from data_engine.websocket_feed import BinanceWebSocketFeed, MarketCache
+from data_engine.coin_database import CoinDatabase
 
 from scanners.market_scanner import MarketScanner
+from scanners.research_engine import ResearchEngine
 from ml_models.prediction_model import EnsemblePredictor
 from ml_models.self_learning import SelfLearningEngine
 from ml_models.coin_ranker import CoinRanker
@@ -55,6 +67,16 @@ from social_ai.sentiment_analyzer import SentimentAnalyzer
 from updater.auto_updater import AutoUpdater
 
 from dashboard.api_server import app, state, broadcast
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Watchlist entry — tracks a candidate signal awaiting research clearance
+# ─────────────────────────────────────────────────────────────────────────────
+@dataclass
+class WatchlistEntry:
+    signal: object          # SignalResult
+    first_seen: float       # time.time() when first detected
+    confirmations: int = 0  # number of consecutive scan cycles signal remained high
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -87,10 +109,19 @@ class TradingSystem:
         self._prev_open_positions: Dict[str, dict] = {}  # symbol -> position snapshot
         self._klines_cache: Dict[str, object] = {}   # symbol -> DataFrame for ranking
         self._ml_predictions_cache: Dict[str, float] = {}  # symbol -> ml confidence
-        self._signal_cooldowns: Dict[str, float] = {}      # symbol -> last signal timestamp
+        self._signal_cooldowns: Dict[str, float] = {}      # symbol -> last decision timestamp
+
+        # Watchlist + research phase
+        self._watchlist: Dict[str, WatchlistEntry] = {}    # symbol -> entry awaiting research
+        self._pending_research_ids: Dict[str, int] = {}    # symbol -> research_log id (for outcome)
+        self._coin_db = CoinDatabase()
+        self._research: Optional[ResearchEngine] = None    # initialised in start()
 
         # WS feed handle (populated in start())
         self._ws_feed = None
+
+        # Bot on/off control (toggled via Telegram commands)
+        self._bot_paused: bool = False
 
         # Strategy stack
         self._strategies = [
@@ -109,6 +140,7 @@ class TradingSystem:
         state.self_learner = self._learner
         state.coin_ranker = self._ranker
         state.auto_updater = self._updater
+        state.coin_database = self._coin_db
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
     async def start(self) -> None:
@@ -121,10 +153,13 @@ class TradingSystem:
         # Start subsystems
         await self._data_engine.start()
         await self._portfolio.start()
+        await self._coin_db.start()
         await self._alerts.start()
+        self._alerts.set_command_handler(self._handle_telegram_command)
         await self._sentiment.start()
         await self._binance_exec.start()
         await self._bybit_exec.start()
+        self._research = ResearchEngine(self._data_engine, self._coin_db)
 
         # Fetch symbol list — may fail if exchange API is geo-blocked
         try:
@@ -188,22 +223,89 @@ class TradingSystem:
             if kline:
                 await broadcast("kline", kline)
 
-    # ── Main scan loop ────────────────────────────────────────────────────
+    # ── Telegram command handler ───────────────────────────────────────────
+    async def _handle_telegram_command(self, cmd: str) -> None:
+        """Handle /pause, /resume, /status, /help commands from Telegram."""
+        if cmd in ("pause", "stop_trading"):
+            self._bot_paused = True
+            await self._alerts.send_text(
+                "⏸ *Bot trading PAUSED*\n\n"
+                "Scanning continues but no new trades will be opened.\n"
+                "Send /resume to re-enable trading."
+            )
+            logger.info("Bot trading paused via Telegram command")
+
+        elif cmd == "resume":
+            self._bot_paused = False
+            await self._alerts.send_text(
+                "▶️ *Bot trading RESUMED*\n\n"
+                "Scanning and trade execution are active again."
+            )
+            logger.info("Bot trading resumed via Telegram command")
+
+        elif cmd == "status":
+            positions = await self._portfolio.get_open_positions()
+            state_label = "⏸ PAUSED (no new trades)" if self._bot_paused else "▶️ RUNNING"
+            await self._alerts.send_text(
+                f"📊 *Bot Status*\n\n"
+                f"State: `{state_label}`\n"
+                f"Open positions: `{len(positions)}`\n"
+                f"Daily trades left: `{self._risk.daily_trades_remaining}`\n"
+                f"Watchlist: `{len(self._watchlist)}` symbols\n"
+                f"Exchange: `{self.exchange.upper()}`\n"
+                f"Dry run: `{self.dry_run}`"
+            )
+
+        elif cmd in ("help", "start"):
+            await self._alerts.send_text(
+                "🤖 *Bot Commands*\n\n"
+                "/status — show current bot status\n"
+                "/pause — pause trading (no new trades)\n"
+                "/resume — resume trading\n"
+                "/help — show this message"
+            )
+
+        else:
+            await self._alerts.send_text(
+                f"❓ Unknown command: `/{cmd}`\n"
+                "Send /help for available commands."
+            )
+
+    # ── Main scan loop ─────────────────────────────────────────────────────
     async def _scan_loop(self) -> None:
         while self._running:
             try:
                 logger.info("── Scan cycle starting ──")
                 signals = await self._scanner.scan_all()
+                now = time.time()
+
+                # Update full klines cache from bulk scan so CoinRanker can rank
+                # ALL volume-filtered coins, not just the handful that hit threshold
+                self._klines_cache.update(self._scanner.get_last_klines())
+
+                # Re-sort: primary = signal score DESC, secondary = AI rank DESC.
+                # When multiple signals tie on score, coins with higher AI grade
+                # get processed first and take the limited daily trade slots.
+                if state.coin_rankings:
+                    _rank_map = {r["symbol"]: r["composite_score"] for r in state.coin_rankings}
+                    signals.sort(
+                        key=lambda s: (s.score, _rank_map.get(s.symbol, 0.0)),
+                        reverse=True,
+                    )
+
+                # Track which symbols are currently qualifying (for watchlist expiry)
+                live_qualifying: set = set()
 
                 for signal in signals:
                     if not signal.is_high_probability:
                         continue
 
-                    # Per-symbol cooldown — avoid duplicate signals within 5 minutes
-                    now = time.time()
-                    if now - self._signal_cooldowns.get(signal.symbol, 0) < 300:
-                        continue
-                    self._signal_cooldowns[signal.symbol] = now
+                    # Cooldown applies only when adding NEW entries to watchlist
+                    in_watchlist = signal.symbol in self._watchlist
+                    if not in_watchlist:
+                        cooldown_secs = settings.signal_cooldown_minutes * 60
+                        if now - self._signal_cooldowns.get(signal.symbol, 0) < cooldown_secs:
+                            continue
 
                     # ML prediction boost
                     try:
@@ -214,17 +316,15 @@ class TradingSystem:
                         signal.score += ml_score
                         signal.ai_prediction = confidence
                         signal.confidence = confidence
-                        # Cache ML confidence for CoinRanker
                         self._ml_predictions_cache[signal.symbol] = confidence
-                        # Record feature vector for self-learning
-                        trade_id = f"{signal.symbol}_{int(time.time())}"
+                        trade_id = f"{signal.symbol}_{int(now)}"
                         self._learner.record_prediction(trade_id, signal.symbol, df)
                         self._pending_labels[signal.symbol] = trade_id
                         self._klines_cache[signal.symbol] = df
                     except Exception as exc:
                         logger.debug("ML predict error {}: {}", signal.symbol, exc)
 
-                    # Sentiment
+                    # Sentiment boost
                     try:
                         sent_score, sent_signals = \
                             await self._sentiment.get_sentiment_score(signal.symbol)
@@ -234,32 +334,120 @@ class TradingSystem:
                     except Exception:
                         pass
 
-                    # Skip if still below threshold after ML + sentiment
+                    # Re-check threshold after ML + sentiment
                     if not signal.is_high_probability:
                         continue
 
-                    # Store in dashboard state (cap at 500 to prevent memory leak)
+                    # ML confidence gate — only enforced when model is trained (not default 0.5)
+                    ml_trained = abs(signal.ai_prediction - 0.5) > 0.05
+                    if ml_trained and signal.ai_prediction < settings.min_ml_confidence:
+                        logger.debug(
+                            "{} ML confidence {:.2f} < gate {:.2f} — skip",
+                            signal.symbol, signal.ai_prediction, settings.min_ml_confidence,
+                        )
+                        continue
+
+                    live_qualifying.add(signal.symbol)
+
+                    # Log to coin database for self-learning
+                    await self._coin_db.record_signal(signal.symbol, signal.score)
+
+                    # Update dashboard state
                     state.recent_signals.append({
-                        "symbol": signal.symbol,
-                        "score": signal.score,
-                        "direction": signal.direction,
-                        "signals": signal.signals,
-                        "price": signal.price,
+                        "symbol":          signal.symbol,
+                        "score":           signal.score,
+                        "direction":       signal.direction,
+                        "signals":         signal.signals,
+                        "price":           signal.price,
+                        "volume_24h":      signal.volume_24h,
                         "price_change_pct": signal.price_change_pct,
-                        "ai_prediction": signal.ai_prediction,
+                        "ai_prediction":   signal.ai_prediction,
                     })
                     if len(state.recent_signals) > 500:
                         state.recent_signals = state.recent_signals[-500:]
 
-                    # Send alert
-                    await self._alerts.send_trade_signal(signal)
-                    await broadcast("signal", {"symbol": signal.symbol, "score": signal.score})
+                    # Skip watchlist and trading while bot is paused
+                    if self._bot_paused:
+                        continue
 
-                    # Attempt trade execution
-                    await self._try_execute_trade(signal)
+                    if not in_watchlist:
+                        # ── Stage 1: Add to watchlist ──────────────────────
+                        self._watchlist[signal.symbol] = WatchlistEntry(
+                            signal=signal, first_seen=now
+                        )
+                        await self._alerts.send_watchlist_alert(
+                            signal, settings.watchlist_confirmations
+                        )
+                        await broadcast("signal", {
+                            "symbol": signal.symbol, "score": signal.score,
+                            "stage": "watchlist",
+                        })
+                        logger.info(
+                            "📡 Watchlist add: {} | score={} | needs {} more scan(s)",
+                            signal.symbol, signal.score, settings.watchlist_confirmations,
+                        )
+                    else:
+                        # ── Stage 2: Increment confirmation count ──────────
+                        entry = self._watchlist[signal.symbol]
+                        entry.signal = signal        # refresh with latest scores
+                        entry.confirmations += 1
+                        logger.info(
+                            "📡 Watchlist confirm: {} | {}/{} | score={}",
+                            signal.symbol, entry.confirmations,
+                            settings.watchlist_confirmations, signal.score,
+                        )
+
+                        if entry.confirmations >= settings.watchlist_confirmations:
+                            # ── Stage 3: Deep research ─────────────────────
+                            logger.info(
+                                "🔬 Research start: {} | score={}", signal.symbol, signal.score
+                            )
+                            result = await self._research.research(
+                                signal.symbol, signal.direction, signal.score
+                            )
+                            research_id = await self._coin_db.record_research(
+                                symbol=signal.symbol,
+                                direction=signal.direction,
+                                initial_score=signal.score,
+                                research_score=result.score,
+                                mtf_alignment=result.mtf_alignment,
+                                passed=result.passed,
+                            )
+
+                            # Set cooldown and clear watchlist slot
+                            self._signal_cooldowns[signal.symbol] = now
+                            del self._watchlist[signal.symbol]
+
+                            # Notify research result
+                            await self._alerts.send_research_result(signal, result)
+
+                            if result.passed:
+                                logger.info(
+                                    "✅ Research PASSED: {} | score={:.1f} | mtf={:.0f}%",
+                                    signal.symbol, result.score, result.mtf_alignment * 100,
+                                )
+                                await self._try_execute_trade(
+                                    signal,
+                                    research_id=research_id,
+                                    research_score=result.score,
+                                )
+                            else:
+                                logger.info(
+                                    "❌ Research FAILED: {} | score={:.1f} | mtf={:.0f}% — skip",
+                                    signal.symbol, result.score, result.mtf_alignment * 100,
+                                )
+
+                # Expire watchlist entries whose signal dropped below threshold
+                stale = [s for s in list(self._watchlist) if s not in live_qualifying]
+                for sym in stale:
+                    del self._watchlist[sym]
+                    logger.debug("Watchlist expired (signal lost): {}", sym)
 
                 logger.info(
-                    "── Scan complete. Next scan in {}s ──",
+                    "── Scan done | {} | watchlist={} | daily_trades_left={} | next in {}s ──",
+                    "PAUSED" if self._bot_paused else "RUNNING",
+                    len(self._watchlist),
+                    self._risk.daily_trades_remaining,
                     settings.scan_interval_seconds,
                 )
                 await asyncio.sleep(settings.scan_interval_seconds)
@@ -271,8 +459,13 @@ class TradingSystem:
                 await asyncio.sleep(10)
 
     # ── Trade execution ────────────────────────────────────────────────────
-    async def _try_execute_trade(self, signal) -> None:
-        # Check open trade limit
+    async def _try_execute_trade(
+        self,
+        signal,
+        research_id: Optional[int] = None,
+        research_score: float = 0.0,
+    ) -> None:
+        # Check open trade + daily limits
         await self._sync_open_trades()
         if not self._risk.can_open_trade():
             return
@@ -306,42 +499,64 @@ class TradingSystem:
         if not risk_params:
             return
 
+        # Notify trade entry (before executing, so user sees intent)
+        await self._alerts.send_trade_entry(
+            symbol=risk_params.symbol,
+            direction=risk_params.direction,
+            entry=risk_params.entry_price,
+            sl=risk_params.stop_loss,
+            tp=risk_params.take_profit,
+            rr=risk_params.risk_reward_ratio,
+            signal_score=signal.score,
+            research_score=research_score,
+            daily_remaining=max(0, self._risk.daily_trades_remaining - 1),
+        )
+
+        self._risk.record_trade_opened()
+        trade_id = None
+
         if self.dry_run:
             logger.info("DRY RUN — would open: {} {}", setup.symbol, setup.direction)
-            await self._portfolio.open_position({
-                "symbol": risk_params.symbol,
-                "direction": risk_params.direction,
-                "entry_price": risk_params.entry_price,
-                "stop_loss": risk_params.stop_loss,
-                "take_profit": risk_params.take_profit,
-                "quantity": risk_params.quantity,
-                "leverage": risk_params.leverage,
+            trade_id = await self._portfolio.open_position({
+                "symbol":           risk_params.symbol,
+                "direction":        risk_params.direction,
+                "entry_price":      risk_params.entry_price,
+                "stop_loss":        risk_params.stop_loss,
+                "take_profit":      risk_params.take_profit,
+                "quantity":         risk_params.quantity,
+                "leverage":         risk_params.leverage,
                 "position_size_usdt": risk_params.position_size_usdt,
-                "exchange": "dry_run",
-                "signal_score": signal.score,
+                "exchange":         "dry_run",
+                "signal_score":     signal.score,
             })
-            return
-
-        # Live execution
-        if self.exchange == "bybit":
-            result = await self._bybit_exec.execute_trade(risk_params)
         else:
-            result = await self._binance_exec.execute_trade(risk_params)
+            # Live execution
+            if self.exchange == "bybit":
+                result = await self._bybit_exec.execute_trade(risk_params)
+            else:
+                result = await self._binance_exec.execute_trade(risk_params)
 
-        if result.get("status") == "open":
-            await self._portfolio.open_position({
-                "symbol": risk_params.symbol,
-                "direction": risk_params.direction,
-                "entry_price": risk_params.entry_price,
-                "stop_loss": risk_params.stop_loss,
-                "take_profit": risk_params.take_profit,
-                "quantity": risk_params.quantity,
-                "leverage": risk_params.leverage,
-                "position_size_usdt": risk_params.position_size_usdt,
-                "exchange": self.exchange,
-                "order_id": str(result.get("order_id", "")),
-                "signal_score": signal.score,
-            })
+            if result.get("status") == "open":
+                trade_id = await self._portfolio.open_position({
+                    "symbol":           risk_params.symbol,
+                    "direction":        risk_params.direction,
+                    "entry_price":      risk_params.entry_price,
+                    "stop_loss":        risk_params.stop_loss,
+                    "take_profit":      risk_params.take_profit,
+                    "quantity":         risk_params.quantity,
+                    "leverage":         risk_params.leverage,
+                    "position_size_usdt": risk_params.position_size_usdt,
+                    "exchange":         self.exchange,
+                    "order_id":         str(result.get("order_id", "")),
+                    "signal_score":     signal.score,
+                })
+
+        if trade_id and research_id:
+            # Link research decision to the actual trade for outcome tracking
+            await self._coin_db.mark_research_executed(research_id, trade_id)
+            self._pending_research_ids[risk_params.symbol] = research_id
+
+        if trade_id:
             self._risk.update_open_trades(
                 len(await self._portfolio.get_open_positions())
             )
@@ -440,10 +655,9 @@ class TradingSystem:
                 self._prev_open_positions = dict(positions)
 
                 metrics = await self._portfolio.calculate_metrics()
-                if metrics:
-                    balance = metrics.get("balance", settings.account_balance_usdt)
-                    self._risk.update_balance(balance)
-                    await broadcast("metrics", metrics)
+                balance = metrics.get("balance", settings.account_balance_usdt)
+                self._risk.update_balance(balance)
+                await broadcast("metrics", metrics)
             except Exception as exc:
                 logger.debug("Portfolio sync error: {}", exc)
             await asyncio.sleep(30)
@@ -482,6 +696,11 @@ class TradingSystem:
                             trade_id = self._pending_labels.pop(symbol, None)
                             if trade_id:
                                 self._learner.label_trade(trade_id, pnl)
+
+                            # Update research outcome for self-learning
+                            research_id = self._pending_research_ids.pop(symbol, None)
+                            if research_id:
+                                await self._coin_db.update_research_outcome(research_id, pnl)
 
                             self._risk.update_open_trades(
                                 len(await self._portfolio.get_open_positions())
@@ -531,6 +750,10 @@ class TradingSystem:
                     trade_id = self._pending_labels.pop(symbol, None)
                     if trade_id:
                         self._learner.label_trade(trade_id, pnl)
+                    # Update research outcome for self-learning
+                    research_id = self._pending_research_ids.pop(symbol, None)
+                    if research_id:
+                        await self._coin_db.update_research_outcome(research_id, pnl)
                     self._risk.update_open_trades(
                         len(await self._portfolio.get_open_positions())
                     )

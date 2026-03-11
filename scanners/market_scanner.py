@@ -44,6 +44,11 @@ class MarketScanner:
         self._pump = PumpDetector(data_engine)
         self._whale = WhaleTracker(data_engine)
         self._meme = MemecoinScanner(data_engine)
+        self._last_klines: Dict[str, "pd.DataFrame"] = {}  # full bulk-fetch cache for ranker
+
+    def get_last_klines(self) -> Dict[str, "pd.DataFrame"]:
+        """Return the klines map from the most recent scan (all volume-filtered coins)."""
+        return dict(self._last_klines)
 
     # ── Public API ────────────────────────────────────────────────────────
     async def scan_all(self) -> List[SignalResult]:
@@ -67,6 +72,7 @@ class MarketScanner:
         klines_map = await self._engine.bulk_fetch_klines(
             symbols, interval="15m", limit=200
         )
+        self._last_klines = dict(klines_map)  # cache for CoinRanker
 
         # Parallel sub-scanner execution
         semaphore = asyncio.Semaphore(100)
