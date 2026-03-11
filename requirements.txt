@@ -71,6 +71,7 @@ httpx==0.26.0
 orjson==3.9.15
 python-multipart==0.0.9
 passlib[bcrypt]==1.7.4
+bcrypt==3.2.2
 python-jose[cryptography]==3.3.0
 
 # Testing
