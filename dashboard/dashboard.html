@@ -508,7 +508,7 @@ function cwS(){
     if(d.type==='metrics'){uSt(d.data);bPC(d.data);bWL(d.data);}
     if(d.type==='positions'){
       var pg=document.querySelector('.page.active');
-      if(pg&&pg.id==='page-trades')rPos(d.data.positions||{});
+      if(pg&&pg.id==='page-trades')rPos(d.data.positions||{},d.data.exposure||null);
     }
     if(d.type==='system_update')toast(d.data.message||'Updated',d.data.success?'ok':'err');
   };
@@ -546,7 +546,7 @@ function uSt(d){
 }
 
 function sHTML(s,showT){
-  var sc=s.score||0,scc=sc>=8?'ssh':sc>=5?'ssm':'';
+  var sc=s.score||0,scc=sc>=11?'ssh':sc>=8?'ssm':'';
   var dc=(s.direction||'LONG').toLowerCase();
   var tags=(s.signals||[]).map(function(t){return '<span class="tag">'+t+'</span>';}).join('');
   var ai=s.ai_prediction?'<span style="font-size:.62rem;color:var(--accent);margin-left:5px">AI:'+Math.round(s.ai_prediction*100)+'%</span>':'';

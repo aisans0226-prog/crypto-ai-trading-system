@@ -128,8 +128,8 @@ class MarketScanner:
         result.score = pump_score + whale_score + meme_score
         result.signals = pump_signals + whale_signals + meme_signals
 
-        # Direction bias
-        if price_change_pct > 0:
+        # Direction bias — treat flat (0 %) as neutral-long
+        if price_change_pct >= 0:
             result.direction = "LONG"
         else:
             result.direction = "SHORT"

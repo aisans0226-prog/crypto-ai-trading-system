@@ -1,12 +1,12 @@
-import os
 """
 dashboard/api_server.py - Professional responsive FastAPI dashboard v2.
 No authentication required — open access on local/VPS network.
 """
 import asyncio
 import json
+import os
 from datetime import datetime
-from typing import List
+from typing import Dict, List, Optional
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -55,53 +55,61 @@ async def health():
 
 
 async def _fetch_current_prices(symbols: list) -> dict:
-    """Fetch current mark prices for symbols from Binance public API (no auth required)."""
+    """Fetch current mark prices for symbols from Binance Futures (no auth required)."""
     import aiohttp
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                "https://api.binance.com/api/v3/ticker/price",
-                timeout=aiohttp.ClientTimeout(total=3)
+                "https://fapi.binance.com/fapi/v1/ticker/price",
+                timeout=aiohttp.ClientTimeout(total=3),
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     sym_set = set(symbols)
-                    return {item["symbol"]: float(item["price"]) for item in data if item["symbol"] in sym_set}
+                    return {item["symbol"]: float(item["price"])
+                            for item in data if item["symbol"] in sym_set}
     except Exception:
         pass
     return {}
+
+
+async def _enrich_positions(positions: Dict[str, dict]) -> None:
+    """Add current_price / unrealized_pnl_usdt / unrealized_pnl_pct in-place."""
+    if not positions:
+        return
+    prices = await _fetch_current_prices(list(positions.keys()))
+    for sym, pos in positions.items():
+        cp = prices.get(sym)
+        if not cp:
+            continue
+        qty   = pos.get("quantity", 0)
+        entry = pos.get("entry_price", 0)
+        size  = pos.get("position_size_usdt") or (qty * entry) or 1
+        upnl  = (cp - entry) * qty if pos.get("direction", "LONG") == "LONG" else (entry - cp) * qty
+        pos["current_price"]        = round(cp, 6)
+        pos["unrealized_pnl_usdt"]  = round(upnl, 2)
+        pos["unrealized_pnl_pct"]   = round(upnl / size * 100, 2) if size else 0
 
 
 @app.get("/api/portfolio")
 async def get_portfolio():
     if not state.portfolio_manager:
         return {"balance": settings.account_balance_usdt, "positions": {}, "risk_exposure": {}}
-    balance = await state.portfolio_manager.get_balance()
+    balance   = await state.portfolio_manager.get_balance()
     positions = await state.portfolio_manager.get_open_positions()
-    exposure = await state.portfolio_manager.get_risk_exposure()
-
-    # Enrich each open position with current price + unrealized PnL
-    if positions:
-        prices = await _fetch_current_prices(list(positions.keys()))
-        for sym, pos in positions.items():
-            cp = prices.get(sym)
-            if cp:
-                qty = pos.get("quantity", 0)
-                entry = pos.get("entry_price", 0)
-                size = pos.get("position_size_usdt") or (qty * entry) or 1
-                direction = pos.get("direction", "LONG")
-                upnl = (cp - entry) * qty if direction == "LONG" else (entry - cp) * qty
-                pos["current_price"] = round(cp, 6)
-                pos["unrealized_pnl_usdt"] = round(upnl, 2)
-                pos["unrealized_pnl_pct"] = round(upnl / size * 100, 2) if size else 0
-
+    exposure  = await state.portfolio_manager.get_risk_exposure()
+    await _enrich_positions(positions)
     return {"balance": balance, "positions": positions, "risk_exposure": exposure}
 
 
 @app.get("/api/metrics")
 async def get_metrics():
     if not state.portfolio_manager:
-        return {}
+        return {
+            "total_trades": 0, "open_trades": 0, "win_rate": 0.0,
+            "profit_factor": 0.0, "max_drawdown_pct": 0.0, "daily_pnl": 0.0,
+            "total_pnl": 0.0, "balance": settings.account_balance_usdt, "pnl_trend": [],
+        }
     return await state.portfolio_manager.calculate_metrics()
 
 
@@ -466,20 +474,9 @@ async def _realtime_loop() -> None:
             await broadcast("metrics", metrics)
 
             positions = dict(await state.portfolio_manager.get_open_positions())
-            if positions:
-                prices = await _fetch_current_prices(list(positions.keys()))
-                for sym, pos in positions.items():
-                    cp = prices.get(sym)
-                    if cp:
-                        qty = pos.get("quantity", 0)
-                        entry = pos.get("entry_price", 0)
-                        size = pos.get("position_size_usdt") or (qty * entry) or 1
-                        direction = pos.get("direction", "LONG")
-                        upnl = (cp - entry) * qty if direction == "LONG" else (entry - cp) * qty
-                        pos["current_price"] = round(cp, 6)
-                        pos["unrealized_pnl_usdt"] = round(upnl, 2)
-                        pos["unrealized_pnl_pct"] = round(upnl / size * 100, 2) if size else 0
-            await broadcast("positions", {"positions": positions})
+            await _enrich_positions(positions)
+            exposure  = await state.portfolio_manager.get_risk_exposure()
+            await broadcast("positions", {"positions": positions, "exposure": exposure})
         except Exception as exc:
             logger.warning("Realtime broadcast error: {}", exc)
 
@@ -504,21 +501,12 @@ async def ws_endpoint(websocket: WebSocket):
                 "type": "metrics", "data": metrics, "ts": datetime.utcnow().isoformat()
             }))
             positions = dict(await state.portfolio_manager.get_open_positions())
-            if positions:
-                prices = await _fetch_current_prices(list(positions.keys()))
-                for sym, pos in positions.items():
-                    cp = prices.get(sym)
-                    if cp:
-                        qty = pos.get("quantity", 0)
-                        entry = pos.get("entry_price", 0)
-                        size = pos.get("position_size_usdt") or (qty * entry) or 1
-                        direction = pos.get("direction", "LONG")
-                        upnl = (cp - entry) * qty if direction == "LONG" else (entry - cp) * qty
-                        pos["current_price"] = round(cp, 6)
-                        pos["unrealized_pnl_usdt"] = round(upnl, 2)
-                        pos["unrealized_pnl_pct"] = round(upnl / size * 100, 2) if size else 0
+            await _enrich_positions(positions)
+            exposure  = await state.portfolio_manager.get_risk_exposure()
             await websocket.send_text(json.dumps({
-                "type": "positions", "data": {"positions": positions}, "ts": datetime.utcnow().isoformat()
+                "type": "positions",
+                "data": {"positions": positions, "exposure": exposure},
+                "ts": datetime.utcnow().isoformat(),
             }))
         except Exception:
             pass

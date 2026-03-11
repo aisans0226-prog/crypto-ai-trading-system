@@ -125,7 +125,7 @@ class RiskManager:
 
         # ── Position sizing ───────────────────────────────────────────────
         risk_usdt = self._account_balance * (settings.risk_per_trade_pct / 100.0)
-        leverage = min(settings.max_leverage, 3)
+        leverage = settings.max_leverage
 
         # Position size in quote currency
         risk_pct_of_entry = risk / entry_price

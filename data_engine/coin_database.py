@@ -124,13 +124,21 @@ class CoinDatabase:
             await session.flush()   # populate log.id before commit
             log_id = log.id
 
-            # Update coin_stats researched count
-            await session.execute(
-                update(CoinStats).where(CoinStats.symbol == symbol).values(
-                    times_researched=CoinStats.times_researched + 1,
-                    updated_at=datetime.utcnow(),
+            # Upsert coin_stats: create row if first time this symbol is researched
+            res = await session.execute(select(CoinStats).where(CoinStats.symbol == symbol))
+            row = res.scalar_one_or_none()
+            now = datetime.utcnow()
+            if row is None:
+                session.add(CoinStats(
+                    symbol=symbol, times_researched=1, updated_at=now,
+                ))
+            else:
+                await session.execute(
+                    update(CoinStats).where(CoinStats.symbol == symbol).values(
+                        times_researched=CoinStats.times_researched + 1,
+                        updated_at=now,
+                    )
                 )
-            )
             await session.commit()
         return log_id
 
