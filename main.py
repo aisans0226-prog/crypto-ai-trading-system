@@ -111,6 +111,10 @@ class TradingSystem:
         self._ml_predictions_cache: Dict[str, float] = {}  # symbol -> ml confidence
         self._signal_cooldowns: Dict[str, float] = {}      # symbol -> last decision timestamp
 
+        # Per-position runtime metadata for smart exit management
+        # Stored in-memory only (not persisted); keyed by symbol
+        self._position_meta: Dict[str, dict] = {}    # symbol -> {opened_at, peak_price, sl_order_id, ...}
+
         # Watchlist + research phase
         self._watchlist: Dict[str, WatchlistEntry] = {}    # symbol -> entry awaiting research
         self._pending_research_ids: Dict[str, int] = {}    # symbol -> research_log id (for outcome)
@@ -519,6 +523,26 @@ class TradingSystem:
         if not risk_params:
             return
 
+        # ── Entry price deviation guard ────────────────────────────────────
+        # Abort if the live price has drifted too far from the strategy price
+        # since the signal was confirmed (prevents chasing after a big spike).
+        if settings.entry_max_deviation_pct > 0:
+            live_ticker = self._cache.tickers.get(risk_params.symbol, {})
+            live_price = float(live_ticker.get("c", 0))
+            if live_price > 0:
+                deviation_pct = abs(live_price - risk_params.entry_price) / risk_params.entry_price * 100
+                if deviation_pct > settings.entry_max_deviation_pct:
+                    logger.info(
+                        "{} entry aborted — price drifted {:.2f}% from signal (max {:.1f}%)",
+                        risk_params.symbol, deviation_pct, settings.entry_max_deviation_pct,
+                    )
+                    await self._alerts.send_text(
+                        f"⚠️ *{risk_params.symbol}* entry cancelled\n"
+                        f"Price drifted {deviation_pct:.2f}% from signal price\n"
+                        f"Signal: {risk_params.entry_price:.4f} | Live: {live_price:.4f}"
+                    )
+                    return
+
         # Notify trade entry (before executing, so user sees intent)
         await self._alerts.send_trade_entry(
             symbol=risk_params.symbol,
@@ -549,6 +573,10 @@ class TradingSystem:
                 "exchange":         "dry_run",
                 "signal_score":     signal.score,
             })
+            if trade_id:
+                self._position_meta[risk_params.symbol] = self._make_position_meta(
+                    risk_params.entry_price
+                )
         else:
             # Live execution
             if self.exchange == "bybit":
@@ -570,6 +598,12 @@ class TradingSystem:
                     "order_id":         str(result.get("order_id", "")),
                     "signal_score":     signal.score,
                 })
+                if trade_id:
+                    self._position_meta[risk_params.symbol] = self._make_position_meta(
+                        risk_params.entry_price,
+                        sl_order_id=result.get("sl_order_id"),
+                        tp_order_id=result.get("tp_order_id"),
+                    )
 
         if trade_id and research_id:
             # Link research decision to the actual trade for outcome tracking
@@ -688,7 +722,7 @@ class TradingSystem:
 
     # ── Position monitor ───────────────────────────────────────────────────
     async def _position_monitor_loop(self) -> None:
-        """Poll exchange every 30s to detect SL/TP fills and close positions."""
+        """Poll exchange every 30s to detect SL/TP fills and run smart position management."""
         while self._running:
             try:
                 if self.dry_run:
@@ -711,33 +745,28 @@ class TradingSystem:
                                 except Exception:
                                     pass
 
-                            await self._portfolio.close_position(symbol, 0.0, pnl)
-
-                            trade_id = self._pending_labels.pop(symbol, None)
-                            if trade_id:
-                                self._learner.label_trade(trade_id, pnl)
-
-                            # Update research outcome for self-learning
-                            research_id = self._pending_research_ids.pop(symbol, None)
-                            if research_id:
-                                await self._coin_db.update_research_outcome(research_id, pnl)
-
-                            self._risk.update_open_trades(
-                                len(await self._portfolio.get_open_positions())
-                            )
+                            await self._teardown_closed_position(symbol, 0.0, pnl)
                             outcome = "✅ TP hit" if pnl > 0 else "🛑 SL hit"
                             await self._alerts.send_text(
                                 f"📊 Position closed: {symbol}\n"
                                 f"{outcome} | PnL: {pnl:+.2f} USDT"
                             )
-                            await broadcast("position_closed", {"symbol": symbol, "pnl": pnl})
                             logger.info("Position monitor: closed {} PnL={:.2f}", symbol, pnl)
+                        else:
+                            # Position still open — run smart exit checks
+                            ticker = self._cache.tickers.get(symbol, {})
+                            current_price = float(ticker.get("c", 0))
+                            if current_price > 0:
+                                await self._manage_open_position(
+                                    symbol, pos_data, executor, current_price
+                                )
             except Exception as exc:
                 logger.debug("Position monitor error: {}", exc)
             await asyncio.sleep(30)
 
     async def _check_dryrun_positions(self) -> None:
-        """Dry-run: simulate position closing when current price hits SL or TP."""
+        """Dry-run: simulate position closing when current price hits SL or TP,
+        then run smart exit checks on still-open positions."""
         portfolio_positions = await self._portfolio.get_open_positions()
         for symbol, pos_data in list(portfolio_positions.items()):
             try:
@@ -766,22 +795,261 @@ class TradingSystem:
 
                 if hit_price:
                     pnl = (hit_price - entry) * qty if direction == "LONG" else (entry - hit_price) * qty
-                    await self._portfolio.close_position(symbol, hit_price, pnl)
-                    trade_id = self._pending_labels.pop(symbol, None)
-                    if trade_id:
-                        self._learner.label_trade(trade_id, pnl)
-                    # Update research outcome for self-learning
-                    research_id = self._pending_research_ids.pop(symbol, None)
-                    if research_id:
-                        await self._coin_db.update_research_outcome(research_id, pnl)
-                    self._risk.update_open_trades(
-                        len(await self._portfolio.get_open_positions())
-                    )
+                    await self._teardown_closed_position(symbol, hit_price, pnl)
                     outcome = "✅ TP hit" if pnl > 0 else "🛑 SL hit"
                     logger.info("[DRY RUN] {} {} PnL={:.2f} USDT", symbol, outcome, pnl)
-                    await broadcast("position_closed", {"symbol": symbol, "pnl": pnl})
+                else:
+                    # Still open — apply smart management (no API calls in dry-run)
+                    await self._manage_open_position(symbol, pos_data, None, current_price)
             except Exception as exc:
                 logger.debug("Dry run position check error {}: {}", symbol, exc)
+
+
+    # ── Smart position management ──────────────────────────────────────────
+
+    def _make_position_meta(
+        self,
+        entry_price: float,
+        sl_order_id=None,
+        tp_order_id=None,
+    ) -> dict:
+        """Build the in-memory metadata dict for a freshly opened position."""
+        return {
+            "opened_at":      time.time(),
+            "peak_price":     entry_price,
+            "sl_order_id":    sl_order_id,
+            "tp_order_id":    tp_order_id,
+            "breakeven_done": False,
+        }
+
+    async def _teardown_closed_position(
+        self,
+        symbol: str,
+        exit_price: float,
+        pnl: float,
+        broadcast_extra: Optional[dict] = None,
+    ) -> None:
+        """
+        Shared teardown for every position close (SL/TP fill, force-close, dry-run hit).
+        Persists the closed trade, cleans up in-memory state, labels the ML trade,
+        updates research outcome, syncs risk counter, and broadcasts the WS event.
+        Callers are responsible for any Telegram alert and log message.
+        """
+        await self._portfolio.close_position(symbol, exit_price, pnl)
+        self._position_meta.pop(symbol, None)
+
+        trade_id = self._pending_labels.pop(symbol, None)
+        if trade_id:
+            self._learner.label_trade(trade_id, pnl)
+
+        research_id = self._pending_research_ids.pop(symbol, None)
+        if research_id:
+            await self._coin_db.update_research_outcome(research_id, pnl)
+
+        self._risk.update_open_trades(len(await self._portfolio.get_open_positions()))
+
+        payload = {"symbol": symbol, "pnl": pnl}
+        if broadcast_extra:
+            payload.update(broadcast_extra)
+        await broadcast("position_closed", payload)
+
+    async def _manage_open_position(
+        self,
+        symbol: str,
+        pos_data: dict,
+        executor,              # None in dry-run
+        current_price: float,
+    ) -> None:
+        """
+        Called every monitor cycle for each still-open position.
+        Applies (in priority order):
+          1. Time-based force-exit
+          2. Reversal / stale-loss exit
+          3. Breakeven stop (SL → entry after 50 % of TP reached)
+          4. Trailing stop (slides SL behind the running peak)
+        """
+        meta = self._position_meta.get(symbol)
+        if not meta:
+            return
+
+        direction  = pos_data.get("direction", "LONG")
+        entry      = float(pos_data.get("entry_price", 0))
+        sl         = float(pos_data.get("stop_loss", 0))
+        tp         = float(pos_data.get("take_profit", 0))
+        quantity   = float(pos_data.get("quantity", 0))
+
+        if entry <= 0 or current_price <= 0:
+            return
+
+        # Track running peak (best price since entry in our favour)
+        if direction == "LONG":
+            meta["peak_price"] = max(meta.get("peak_price", entry), current_price)
+            profit_pct       = (current_price - entry) / entry * 100
+            counter_move_pct = max(0.0, (entry - current_price) / entry * 100)
+        else:
+            meta["peak_price"] = min(meta.get("peak_price", entry), current_price)
+            profit_pct       = (entry - current_price) / entry * 100
+            counter_move_pct = max(0.0, (current_price - entry) / entry * 100)
+
+        hours_open = (time.time() - meta.get("opened_at", time.time())) / 3600
+
+        # ── 1. Time-based force-exit ───────────────────────────────────────
+        max_h = settings.max_position_hold_hours
+        if max_h > 0 and hours_open >= max_h:
+            await self._force_close(
+                symbol, pos_data, executor, current_price,
+                f"⏱ Max hold time {max_h:.0f}h reached",
+            )
+            return
+
+        # ── 2. Reversal / stale-loss exit ─────────────────────────────────
+        if (
+            settings.reversal_exit_enabled
+            and hours_open >= settings.reversal_exit_min_hours
+            and counter_move_pct >= settings.reversal_exit_pct
+        ):
+            await self._force_close(
+                symbol, pos_data, executor, current_price,
+                f"🔄 Reversal exit (−{counter_move_pct:.2f}% after {hours_open:.1f}h)",
+            )
+            return
+
+        # ── 3. Breakeven stop ─────────────────────────────────────────────
+        if settings.breakeven_stop_enabled and not meta.get("breakeven_done"):
+            tp_dist = abs(tp - entry)
+            if tp_dist > 0 and profit_pct > 0:
+                progress_ratio = abs(current_price - entry) / tp_dist
+                if progress_ratio >= 0.5:
+                    buffer = entry * 0.001                              # +0.1 % protection
+                    new_sl = (entry + buffer) if direction == "LONG" else (entry - buffer)
+                    improves = (
+                        (direction == "LONG" and new_sl > sl) or
+                        (direction == "SHORT" and new_sl < sl)
+                    )
+                    if improves:
+                        await self._update_sl_on_exchange(
+                            symbol, direction, quantity, new_sl, meta, executor
+                        )
+                        pos_data["stop_loss"] = new_sl
+                        sl = new_sl  # keep local var fresh for the trailing check below
+                        await self._portfolio.update_position_field(symbol, "stop_loss", new_sl)
+                        meta["breakeven_done"] = True
+                        logger.info("{} breakeven SL set @ {:.6f}", symbol, new_sl)
+                        await self._alerts.send_text(
+                            f"🟡 *{symbol}* | SL → Breakeven\n"
+                            f"SL moved to {new_sl:.4f} (profit: {profit_pct:.2f}%)"
+                        )
+
+        # ── 4. Trailing stop ──────────────────────────────────────────────
+        if (
+            settings.trailing_stop_enabled
+            and profit_pct >= settings.trailing_stop_activation_pct
+        ):
+            peak       = meta.get("peak_price", entry)
+            trail_dist = settings.trailing_stop_distance_pct / 100
+            min_move   = settings.trailing_stop_min_move_pct / 100
+
+            if direction == "LONG":
+                trail_sl = round(peak * (1 - trail_dist), 8)
+                if sl > 0 and trail_sl > sl * (1 + min_move):
+                    await self._update_sl_on_exchange(
+                        symbol, direction, quantity, trail_sl, meta, executor
+                    )
+                    pos_data["stop_loss"] = trail_sl
+                    await self._portfolio.update_position_field(symbol, "stop_loss", trail_sl)
+                    logger.info(
+                        "{} trailing SL: {:.6f} → {:.6f} (peak {:.6f})",
+                        symbol, sl, trail_sl, peak,
+                    )
+            else:
+                trail_sl = round(peak * (1 + trail_dist), 8)
+                if sl > 0 and trail_sl < sl * (1 - min_move):
+                    await self._update_sl_on_exchange(
+                        symbol, direction, quantity, trail_sl, meta, executor
+                    )
+                    pos_data["stop_loss"] = trail_sl
+                    await self._portfolio.update_position_field(symbol, "stop_loss", trail_sl)
+                    logger.info(
+                        "{} trailing SL: {:.6f} → {:.6f} (peak {:.6f})",
+                        symbol, sl, trail_sl, peak,
+                    )
+
+    async def _update_sl_on_exchange(
+        self,
+        symbol: str,
+        direction: str,
+        quantity: float,
+        new_sl: float,
+        meta: dict,
+        executor,
+    ) -> None:
+        """Place an updated SL order on the exchange (no-op in dry-run)."""
+        if executor is None:
+            return   # dry-run: only in-memory tracking needed
+        try:
+            result = await executor.update_stop_loss(
+                symbol, direction, quantity, new_sl,
+                old_order_id=meta.get("sl_order_id"),
+            )
+            new_id = result.get("orderId") or result.get("result", {}).get("orderId")
+            if new_id:
+                meta["sl_order_id"] = new_id
+        except Exception as exc:
+            logger.debug("_update_sl_on_exchange {}: {}", symbol, exc)
+
+    async def _force_close(
+        self,
+        symbol: str,
+        pos_data: dict,
+        executor,
+        current_price: float,
+        reason: str,
+    ) -> None:
+        """
+        Immediately close a position at market price.
+        Works for both live (calls executor) and dry-run (calculates PnL locally).
+        """
+        direction = pos_data.get("direction", "LONG")
+        quantity  = float(pos_data.get("quantity", 0))
+        entry     = float(pos_data.get("entry_price", current_price))
+        meta      = self._position_meta.get(symbol, {})
+        pnl       = 0.0
+
+        if executor is not None:
+            try:
+                await executor.close_position_market(symbol, direction, quantity)
+            except Exception as exc:
+                logger.error("Force-close market order failed {}: {}", symbol, exc)
+                return
+
+            for key in ("sl_order_id", "tp_order_id"):
+                oid = meta.get(key)
+                if oid:
+                    try:
+                        await executor.cancel_order(symbol, oid)
+                    except Exception:
+                        pass
+
+            if hasattr(executor, "get_recent_pnl"):
+                try:
+                    pnl = await executor.get_recent_pnl(symbol)
+                except Exception:
+                    pass
+        else:
+            # Dry-run: calculate PnL at current price
+            pnl = (
+                (current_price - entry) * quantity
+                if direction == "LONG"
+                else (entry - current_price) * quantity
+            )
+
+        await self._teardown_closed_position(symbol, current_price, pnl, {"reason": reason})
+        await self._alerts.send_text(
+            f"🚫 *Force Close: {symbol}*\n"
+            f"Reason: {reason}\n"
+            f"Exit: {current_price:.4f} | PnL: {pnl:+.2f} USDT"
+        )
+        logger.info("Force-closed {} | {} | PnL={:.2f}", symbol, reason, pnl)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

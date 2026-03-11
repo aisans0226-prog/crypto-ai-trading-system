@@ -49,6 +49,27 @@ class Settings(BaseSettings):
     min_risk_reward_ratio: float = 2.0
     max_daily_trades: int = 3              # max trades bot can open per day
 
+    # ── Smart position exit controls ──────────────────────────────────────────
+    # Entry guard: abort if live price has drifted this far from signal price
+    entry_max_deviation_pct: float = 0.5
+
+    # Trailing stop: slides SL upward (LONG) / downward (SHORT) as price moves in favour
+    trailing_stop_enabled: bool = True
+    trailing_stop_activation_pct: float = 1.0   # % profit required to activate
+    trailing_stop_distance_pct: float = 0.8      # keep SL this % behind the peak price
+    trailing_stop_min_move_pct: float = 0.3      # only update exchange SL if new SL improves by ≥ this %
+
+    # Breakeven stop: move SL to entry + 0.1% buffer once price reaches 50 % of TP
+    breakeven_stop_enabled: bool = True
+
+    # Time-based exit: force-close position after N hours regardless of SL/TP (0 = disabled)
+    max_position_hold_hours: float = 24.0
+
+    # Reversal exit: exit early if position is losing AND has been open long enough
+    reversal_exit_enabled: bool = True
+    reversal_exit_pct: float = 1.5       # % loss from entry that triggers early exit
+    reversal_exit_min_hours: float = 2.0 # minimum hours open before reversal exit fires
+
     # AI Signal — stricter quality gates
     signal_score_threshold: int = 11       # raised from 8 → requires strong scanner score
     min_ml_confidence: float = 0.60        # min ML confidence to confirm entry (when trained)

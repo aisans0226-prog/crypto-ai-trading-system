@@ -160,6 +160,16 @@ class PortfolioManager:
             )
         return trade_id
 
+    async def update_position_field(self, symbol: str, field: str, value) -> None:
+        """Update a single field on an in-memory position (e.g. stop_loss after trailing).
+        Does NOT write to DB — the correct SL is tracked on the exchange side."""
+        if symbol in self._open_positions:
+            self._open_positions[symbol][field] = value
+            if self._redis:
+                await self._redis.set(
+                    "portfolio:positions", json.dumps(self._open_positions)
+                )
+
     async def close_position(
         self, symbol: str, exit_price: float, pnl: float
     ) -> None:
