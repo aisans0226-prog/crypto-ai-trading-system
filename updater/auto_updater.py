@@ -42,19 +42,19 @@ class AutoUpdater:
         BACKUP_DIR.mkdir(exist_ok=True)
 
     def _get_current_commit(self) -> str:
-        rc, out, _ = _run(["git", "rev-parse", "--short", "HEAD"])
-        return out if rc == 0 else "unknown"
+        rc, out, _ = _run(["git", "rev-parse", "HEAD"])
+        return out[:7] if rc == 0 else "unknown"
 
     def _get_remote_commit(self) -> str:
         _run(["git", "fetch", "origin", BRANCH])
         rc, out, _ = _run(["git", "rev-parse", f"origin/{BRANCH}"])
-        return out[:8] if rc == 0 else ""
+        return out[:7] if rc == 0 else ""
 
     async def check_for_update(self) -> dict:
         loop = asyncio.get_running_loop()
         remote = await loop.run_in_executor(None, self._get_remote_commit)
         self._latest_commit = remote
-        self._update_available = bool(remote and remote != self._current_commit[:8])
+        self._update_available = bool(remote and remote != self._current_commit[:7])
         return {
             "current_commit": self._current_commit,
             "latest_commit": remote,

@@ -136,6 +136,55 @@ async def update_rollback():
     return result
 
 
+
+@app.get("/api/trades")
+async def get_trades(limit: int = 100, status: str = "all"):
+    """Return trade history with win-rate stats."""
+    if not state.portfolio_manager:
+        return {"trades": [], "stats": {}}
+    from sqlalchemy import select
+    from portfolio.portfolio_manager import TradeRecord
+    async with state.portfolio_manager._session_factory() as session:
+        query = select(TradeRecord).order_by(TradeRecord.id.desc()).limit(limit)
+        if status != "all":
+            query = query.where(TradeRecord.status == status)
+        result = await session.execute(query)
+        trades = result.scalars().all()
+
+    rows = [
+        {
+            "id":           t.id,
+            "symbol":       t.symbol,
+            "direction":    t.direction,
+            "entry_price":  t.entry_price,
+            "exit_price":   t.exit_price,
+            "quantity":     t.quantity,
+            "leverage":     t.leverage,
+            "stop_loss":    t.stop_loss,
+            "take_profit":  t.take_profit,
+            "pnl_usdt":     t.pnl_usdt,
+            "status":       t.status,
+            "exchange":     t.exchange,
+            "signal_score": t.signal_score,
+            "opened_at":    t.opened_at.isoformat() if t.opened_at else None,
+            "closed_at":    t.closed_at.isoformat() if t.closed_at else None,
+        }
+        for t in trades
+    ]
+
+    closed = [r for r in rows if r["status"] == "closed"]
+    wins   = [r for r in closed if r["pnl_usdt"] and r["pnl_usdt"] > 0]
+    stats  = {
+        "total":        len(rows),
+        "open":         len([r for r in rows if r["status"] == "open"]),
+        "closed":       len(closed),
+        "wins":         len(wins),
+        "losses":       len(closed) - len(wins),
+        "win_rate_pct": round(len(wins) / len(closed) * 100, 1) if closed else 0,
+        "total_pnl":    round(sum(r["pnl_usdt"] or 0 for r in closed), 2),
+    }
+    return {"trades": rows, "stats": stats}
+
 @app.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket):
     await websocket.accept()

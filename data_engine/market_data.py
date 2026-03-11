@@ -1,24 +1,20 @@
 """
 data_engine/market_data.py — Async REST market data fetcher
-Supports Binance Futures + Bybit Futures with rate-limit handling.
+Supports Binance Futures (production + testnet) + Bybit Futures with rate-limit handling.
 """
 import asyncio
-import time
 from typing import Dict, List, Optional, Tuple
 import aiohttp
 import pandas as pd
-import numpy as np
 from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config import settings
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Constants
-# ─────────────────────────────────────────────────────────────────────────────
-BINANCE_FAPI_BASE = "https://fapi.binance.com"
-BYBIT_V5_BASE = "https://api.bybit.com"
+BINANCE_FAPI_PROD    = "https://fapi.binance.com"
+BINANCE_FAPI_TESTNET = "https://testnet.binancefuture.com"
+BYBIT_V5_BASE        = "https://api.bybit.com"
 
 KLINE_COLUMNS = [
     "timestamp", "open", "high", "low", "close", "volume",
@@ -27,20 +23,25 @@ KLINE_COLUMNS = [
 ]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# MarketDataEngine
-# ─────────────────────────────────────────────────────────────────────────────
 class MarketDataEngine:
     """
     Fetches OHLCV data, order-book snapshots, open-interest,
     and funding-rate data from Binance / Bybit asynchronously.
+    Supports testnet mode and HTTP proxy.
     """
 
     def __init__(self) -> None:
         self._session: Optional[aiohttp.ClientSession] = None
-        self._rate_limit_semaphore = asyncio.Semaphore(20)   # max 20 concurrent requests
+        self._rate_limit_semaphore = asyncio.Semaphore(20)
+        self._binance_base = (
+            BINANCE_FAPI_TESTNET if settings.binance_testnet else BINANCE_FAPI_PROD
+        )
+        self._proxy: Optional[str] = settings.http_proxy or None
+        if settings.binance_testnet:
+            logger.info("MarketDataEngine using Binance TESTNET ({})", self._binance_base)
+        if self._proxy:
+            logger.info("MarketDataEngine using HTTP proxy: {}", self._proxy)
 
-    # ── Session lifecycle ─────────────────────────────────────────────────
     async def start(self) -> None:
         timeout = aiohttp.ClientTimeout(total=15)
         self._session = aiohttp.ClientSession(timeout=timeout)
@@ -58,11 +59,12 @@ class MarketDataEngine:
     async def __aexit__(self, *_):
         await self.stop()
 
-    # ── Internal HTTP helper ──────────────────────────────────────────────
-    @retry(stop=stop_after_attempt(5), wait=wait_exponential(min=1, max=10))
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=5))
     async def _get(self, url: str, params: dict | None = None) -> dict | list:
         async with self._rate_limit_semaphore:
-            async with self._session.get(url, params=params) as resp:
+            async with self._session.get(
+                url, params=params, proxy=self._proxy
+            ) as resp:
                 if resp.status == 429:
                     retry_after = int(resp.headers.get("Retry-After", 5))
                     logger.warning("Rate limited. Sleeping {}s", retry_after)
@@ -71,9 +73,8 @@ class MarketDataEngine:
                 resp.raise_for_status()
                 return await resp.json()
 
-    # ── Binance — All futures symbols ────────────────────────────────────
     async def get_binance_symbols(self) -> List[str]:
-        data = await self._get(f"{BINANCE_FAPI_BASE}/fapi/v1/exchangeInfo")
+        data = await self._get(f"{self._binance_base}/fapi/v1/exchangeInfo")
         symbols = [
             s["symbol"] for s in data["symbols"]
             if s["status"] == "TRADING" and s["symbol"].endswith("USDT")
@@ -81,7 +82,6 @@ class MarketDataEngine:
         logger.debug("Binance symbols fetched: {}", len(symbols))
         return symbols
 
-    # ── Bybit — All futures symbols ──────────────────────────────────────
     async def get_bybit_symbols(self) -> List[str]:
         data = await self._get(
             f"{BYBIT_V5_BASE}/v5/market/instruments-info",
@@ -94,15 +94,11 @@ class MarketDataEngine:
         logger.debug("Bybit symbols fetched: {}", len(symbols))
         return symbols
 
-    # ── OHLCV klines ─────────────────────────────────────────────────────
     async def get_klines_binance(
-        self,
-        symbol: str,
-        interval: str = "15m",
-        limit: int = 200,
+        self, symbol: str, interval: str = "15m", limit: int = 200,
     ) -> pd.DataFrame:
         raw = await self._get(
-            f"{BINANCE_FAPI_BASE}/fapi/v1/klines",
+            f"{self._binance_base}/fapi/v1/klines",
             params={"symbol": symbol, "interval": interval, "limit": limit},
         )
         df = pd.DataFrame(raw, columns=KLINE_COLUMNS)
@@ -113,19 +109,11 @@ class MarketDataEngine:
         return df[["open", "high", "low", "close", "volume", "quote_volume"]]
 
     async def get_klines_bybit(
-        self,
-        symbol: str,
-        interval: str = "15",
-        limit: int = 200,
+        self, symbol: str, interval: str = "15", limit: int = 200,
     ) -> pd.DataFrame:
         raw = await self._get(
             f"{BYBIT_V5_BASE}/v5/market/kline",
-            params={
-                "category": "linear",
-                "symbol": symbol,
-                "interval": interval,
-                "limit": limit,
-            },
+            params={"category": "linear", "symbol": symbol, "interval": interval, "limit": limit},
         )
         rows = raw["result"]["list"]
         df = pd.DataFrame(
@@ -139,10 +127,9 @@ class MarketDataEngine:
         df.sort_index(inplace=True)
         return df[["open", "high", "low", "close", "volume"]]
 
-    # ── Open interest ────────────────────────────────────────────────────
     async def get_open_interest_binance(self, symbol: str) -> float:
         data = await self._get(
-            f"{BINANCE_FAPI_BASE}/fapi/v1/openInterest",
+            f"{self._binance_base}/fapi/v1/openInterest",
             params={"symbol": symbol},
         )
         return float(data["openInterest"])
@@ -155,18 +142,16 @@ class MarketDataEngine:
         rows = data["result"]["list"]
         return float(rows[0]["openInterest"]) if rows else 0.0
 
-    # ── Funding rate ─────────────────────────────────────────────────────
     async def get_funding_rate_binance(self, symbol: str) -> float:
         data = await self._get(
-            f"{BINANCE_FAPI_BASE}/fapi/v1/premiumIndex",
+            f"{self._binance_base}/fapi/v1/premiumIndex",
             params={"symbol": symbol},
         )
         return float(data["lastFundingRate"])
 
-    # ── Order book depth ─────────────────────────────────────────────────
     async def get_order_book_binance(self, symbol: str, limit: int = 20) -> Dict:
         data = await self._get(
-            f"{BINANCE_FAPI_BASE}/fapi/v1/depth",
+            f"{self._binance_base}/fapi/v1/depth",
             params={"symbol": symbol, "limit": limit},
         )
         return {
@@ -174,17 +159,15 @@ class MarketDataEngine:
             "asks": [[float(p), float(q)] for p, q in data["asks"]],
         }
 
-    # ── 24h ticker ───────────────────────────────────────────────────────
     async def get_ticker_24h_binance(self, symbol: str) -> Dict:
         return await self._get(
-            f"{BINANCE_FAPI_BASE}/fapi/v1/ticker/24hr",
+            f"{self._binance_base}/fapi/v1/ticker/24hr",
             params={"symbol": symbol},
         )
 
     async def get_all_tickers_binance(self) -> List[Dict]:
-        return await self._get(f"{BINANCE_FAPI_BASE}/fapi/v1/ticker/24hr")
+        return await self._get(f"{self._binance_base}/fapi/v1/ticker/24hr")
 
-    # ── Parallel OHLCV bulk fetch ─────────────────────────────────────────
     async def bulk_fetch_klines(
         self,
         symbols: List[str],
@@ -192,7 +175,6 @@ class MarketDataEngine:
         limit: int = 200,
         exchange: str = "binance",
     ) -> Dict[str, pd.DataFrame]:
-        """Fetch OHLCV for multiple symbols concurrently."""
         semaphore = asyncio.Semaphore(50)
 
         async def fetch_one(sym: str) -> Tuple[str, Optional[pd.DataFrame]]:
@@ -204,7 +186,7 @@ class MarketDataEngine:
                         df = await self.get_klines_bybit(sym, interval, limit)
                     return sym, df
                 except Exception as exc:
-                    logger.warning("Failed to fetch {} — {}", sym, exc)
+                    logger.warning("Failed to fetch {} - {}", sym, exc)
                     return sym, None
 
         tasks = [fetch_one(s) for s in symbols]
