@@ -101,7 +101,7 @@ class SentimentAnalyzer:
     async def _fetch_reddit(self, coin: str) -> List[str]:
         if not self._session:
             return []
-        url = f"https://www.reddit.com/search.json"
+        url = "https://www.reddit.com/search.json"
         params = {"q": coin, "sort": "new", "limit": 15, "t": "day"}
         headers = {"User-Agent": "CryptoBot/1.0"}
         try:

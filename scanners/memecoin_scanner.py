@@ -59,6 +59,7 @@ class MemecoinScanner:
 
             # ── Meme bonus ───────────────────────────────────────────────
             if is_meme and score >= 2:
+                score += 1
                 signals.append("meme_narrative")
 
         except Exception as exc:

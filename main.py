@@ -21,7 +21,8 @@ import argparse
 import sys
 import os
 import signal
-from typing import Optional
+import time
+from typing import Dict, Optional
 
 import uvicorn
 from loguru import logger
@@ -33,10 +34,12 @@ from config import settings
 from utils.logger import setup_logger
 
 from data_engine.market_data import MarketDataEngine
-from data_engine.websocket_feed import BinanceWebSocketFeed, BybitWebSocketFeed, MarketCache
+from data_engine.websocket_feed import BinanceWebSocketFeed, MarketCache
 
 from scanners.market_scanner import MarketScanner
 from ml_models.prediction_model import EnsemblePredictor
+from ml_models.self_learning import SelfLearningEngine
+from ml_models.coin_ranker import CoinRanker
 
 from strategy.trend_strategy import TrendStrategy
 from strategy.breakout_strategy import BreakoutStrategy
@@ -49,6 +52,7 @@ from trading.arbitrage_engine import ArbitrageEngine
 from portfolio.portfolio_manager import PortfolioManager
 from alerts.telegram_bot import AlertSystem
 from social_ai.sentiment_analyzer import SentimentAnalyzer
+from updater.auto_updater import AutoUpdater
 
 from dashboard.api_server import app, state, broadcast
 
@@ -73,6 +77,16 @@ class TradingSystem:
         self._sentiment = SentimentAnalyzer()
         self._arb = ArbitrageEngine(self._data_engine)
 
+        # AI self-learning and ranking
+        self._learner = SelfLearningEngine()
+        self._ranker = CoinRanker(self._learner)
+        self._updater = AutoUpdater()
+
+        # Self-learning tracking
+        self._pending_labels: Dict[str, str] = {}   # symbol -> trade_id
+        self._prev_open_symbols: set = set()
+        self._klines_cache: Dict[str, object] = {}  # symbol -> DataFrame for ranking
+
         # Strategy stack
         self._strategies = [
             TrendStrategy(),
@@ -87,6 +101,9 @@ class TradingSystem:
         # Inject into dashboard state
         state.portfolio_manager = self._portfolio
         state.market_scanner = self._scanner
+        state.self_learner = self._learner
+        state.coin_ranker = self._ranker
+        state.auto_updater = self._updater
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
     async def start(self) -> None:
@@ -125,6 +142,8 @@ class TradingSystem:
             self._scan_loop(),
             self._arbitrage_loop(symbols),
             self._portfolio_sync_loop(),
+            self._coin_ranking_loop(),
+            self._updater.start_polling(),
             return_exceptions=True,
         )
 
@@ -136,6 +155,7 @@ class TradingSystem:
         await self._binance_exec.stop()
         await self._bybit_exec.stop()
         await self._portfolio.stop()
+        await self._updater.stop()
         logger.info("System stopped cleanly")
 
     # ── WS event callback ─────────────────────────────────────────────────
@@ -166,6 +186,11 @@ class TradingSystem:
                         signal.score += ml_score
                         signal.ai_prediction = confidence
                         signal.confidence = confidence
+                        # Record feature vector for self-learning
+                        trade_id = f"{signal.symbol}_{int(time.time())}"
+                        self._learner.record_prediction(trade_id, signal.symbol, df)
+                        self._pending_labels[signal.symbol] = trade_id
+                        self._klines_cache[signal.symbol] = df
                     except Exception as exc:
                         logger.debug("ML predict error {}: {}", signal.symbol, exc)
 
@@ -289,6 +314,45 @@ class TradingSystem:
                 len(await self._portfolio.get_open_positions())
             )
 
+    # ── Coin ranking loop ──────────────────────────────────────────────────
+    async def _coin_ranking_loop(self) -> None:
+        while self._running:
+            try:
+                if self._klines_cache:
+                    # Update BTC baseline for correlation penalty
+                    try:
+                        btc_df = await self._data_engine.get_klines_binance(
+                            "BTCUSDT", "1h", 100
+                        )
+                        self._ranker.update_btc(btc_df)
+                    except Exception:
+                        pass
+
+                    rankings = await self._ranker.rank(self._klines_cache)
+                    state.coin_rankings = [
+                        {
+                            "symbol": r.symbol,
+                            "composite_score": r.composite_score,
+                            "momentum_score": r.momentum_score,
+                            "volume_score": r.volume_score,
+                            "trend_score": r.trend_score,
+                            "win_rate": r.win_rate,
+                            "ml_confidence": r.ml_confidence,
+                            "grade": r.grade,
+                        }
+                        for r in rankings
+                    ]
+                    logger.info(
+                        "CoinRanker: ranked {} coins, top={} grade={}",
+                        len(rankings),
+                        rankings[0].symbol if rankings else "-",
+                        rankings[0].grade if rankings else "-",
+                    )
+                    await broadcast("rankings_update", {"count": len(rankings)})
+            except Exception as exc:
+                logger.debug("Coin ranking loop error: {}", exc)
+            await asyncio.sleep(300)    # re-rank every 5 minutes
+
     # ── Arbitrage loop ─────────────────────────────────────────────────────
     async def _arbitrage_loop(self, symbols) -> None:
         while self._running:
@@ -312,9 +376,27 @@ class TradingSystem:
     async def _portfolio_sync_loop(self) -> None:
         while self._running:
             try:
+                positions = await self._portfolio.get_open_positions()
+                current_open = set(positions.keys())
+
+                # Detect newly closed positions and label for self-learning
+                closed_symbols = self._prev_open_symbols - current_open
+                for sym in closed_symbols:
+                    trade_id = self._pending_labels.pop(sym, None)
+                    if trade_id:
+                        # Estimate outcome from last known price vs entry
+                        pos_data = next(
+                            (p for p in positions.values() if p.get("symbol") == sym),
+                            None,
+                        )
+                        pnl = pos_data.get("pnl_usdt", 0.0) if pos_data else 0.0
+                        self._learner.label_trade(trade_id, pnl)
+
+                self._prev_open_symbols = current_open
+
                 metrics = await self._portfolio.calculate_metrics()
                 if metrics:
-                    balance = metrics.get("balance", self._risk._account_balance)
+                    balance = metrics.get("balance", settings.account_balance_usdt)
                     self._risk.update_balance(balance)
                     await broadcast("metrics", metrics)
             except Exception as exc:

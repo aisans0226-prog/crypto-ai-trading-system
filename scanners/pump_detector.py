@@ -21,6 +21,7 @@ from data_engine.market_data import MarketDataEngine
 class PumpDetector:
     def __init__(self, engine: MarketDataEngine) -> None:
         self._engine = engine
+        self._oi_cache: dict = {}
 
     async def evaluate(
         self,
@@ -61,15 +62,16 @@ class PumpDetector:
                 score += 1
                 signals.append("above_ema20")
 
-            # ── Open interest increasing ─────────────────────────────────
+            # ── Open interest increasing (real OI delta check) ────────────
             try:
-                oi = await self._engine.get_open_interest_binance(symbol)
-                oi_hist = await self._engine.get_open_interest_binance(symbol)
-                # compare with stored value — simplified delta check via ticker
-                oi_change = float(ticker.get("priceChangePercent", 0))
-                if oi_change > 0 and oi > 0:
-                    score += 1
-                    signals.append("oi_increase")
+                oi_now = await self._engine.get_open_interest_binance(symbol)
+                oi_prev = self._oi_cache.get(symbol, 0)
+                self._oi_cache[symbol] = oi_now
+                if oi_prev > 0 and oi_now > oi_prev:
+                    oi_delta_pct = (oi_now - oi_prev) / oi_prev * 100
+                    if oi_delta_pct >= 0.5:
+                        score += 1
+                        signals.append("oi_increase")
             except Exception:
                 pass
 

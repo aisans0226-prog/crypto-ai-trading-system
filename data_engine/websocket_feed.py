@@ -5,7 +5,7 @@ Handles Binance & Bybit futures streams with auto-reconnect.
 import asyncio
 import json
 import time
-from typing import Callable, Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional
 import websockets
 from loguru import logger
 

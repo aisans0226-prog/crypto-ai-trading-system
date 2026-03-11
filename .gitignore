@@ -48,3 +48,6 @@ secrets/
 .coverage
 htmlcov/
 .mypy_cache/
+
+# Auto-updater backups
+.backups/

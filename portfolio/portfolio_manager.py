@@ -153,7 +153,7 @@ class PortfolioManager:
     # ── Performance metrics ───────────────────────────────────────────────
     async def calculate_metrics(self) -> dict:
         async with self._session_factory() as session:
-            from sqlalchemy import select, func
+            from sqlalchemy import select
             result = await session.execute(
                 select(TradeRecord).where(TradeRecord.status == "closed")
             )
