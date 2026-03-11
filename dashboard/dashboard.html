@@ -365,25 +365,13 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
 </div><!-- #app -->
 
 <script>
-var J=localStorage.getItem('jwt')||'';
 var pC=null,wC=null,rkC=null,lC=null,cpC=null,prC=null;
 var aS=[],aR=[];
 
-async function gJ(){
-  if(J)return J;
-  var pw=prompt('Admin password (default: admin123)')||'admin123';
-  var fd=new FormData();fd.append('username','admin');fd.append('password',pw);
-  var r=await fetch('/auth/token',{method:'POST',body:fd});
-  if(r.ok){var d=await r.json();J=d.access_token;localStorage.setItem('jwt',J);return J;}
-  return null;
-}
-
 async function ap(p,m,b){
-  var t=await gJ();
-  var o={method:m||'GET',headers:{Authorization:'Bearer '+t,'Content-Type':'application/json'}};
+  var o={method:m||'GET',headers:{'Content-Type':'application/json'}};
   if(b)o.body=JSON.stringify(b);
   var r=await fetch(p,o);
-  if(r.status===401){J='';localStorage.removeItem('jwt');return ap(p,m,b);}
   return r.json();
 }
 
