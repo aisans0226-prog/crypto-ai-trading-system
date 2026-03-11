@@ -124,9 +124,23 @@ class TradingSystem:
         await self._binance_exec.start()
         await self._bybit_exec.start()
 
-        # Fetch symbol list for WS feeds
-        symbols = await self._data_engine.get_binance_symbols()
-        symbols = symbols[: settings.max_coins_to_scan]
+        # Fetch symbol list — may fail if exchange API is geo-blocked
+        try:
+            symbols = await self._data_engine.get_binance_symbols()
+            symbols = symbols[: settings.max_coins_to_scan]
+        except Exception as exc:
+            logger.warning(
+                "Cannot reach Binance API ({}). "
+                "Running portfolio sync + updater only — no scanning.",
+                exc,
+            )
+            # Keep portfolio sync and auto-updater alive; skip exchange loops
+            await asyncio.gather(
+                self._portfolio_sync_loop(),
+                self._updater.start_polling(),
+                return_exceptions=True,
+            )
+            return
 
         self._ws_feed = BinanceWebSocketFeed(self._cache, symbols)
         self._cache.register_callback(self._on_ws_event)
@@ -455,7 +469,9 @@ async def run_trading(args: argparse.Namespace) -> None:
 
 
 async def run_all(args: argparse.Namespace) -> None:
-    """Run trading system + uvicorn dashboard concurrently."""
+    """Run trading system + uvicorn dashboard concurrently.
+    Dashboard keeps running even if the trading system encounters an error.
+    """
     config = uvicorn.Config(
         app,
         host=settings.dashboard_host,
@@ -467,10 +483,16 @@ async def run_all(args: argparse.Namespace) -> None:
     if args.dashboard_only:
         await server.serve()
     else:
-        await asyncio.gather(
-            run_trading(args),
-            server.serve(),
-        )
+        async def safe_trading():
+            try:
+                await run_trading(args)
+            except Exception as exc:
+                logger.error(
+                    "Trading system exited with error: {} — dashboard remains running",
+                    exc,
+                )
+
+        await asyncio.gather(safe_trading(), server.serve())
 
 
 if __name__ == "__main__":
