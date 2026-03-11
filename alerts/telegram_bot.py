@@ -24,6 +24,21 @@ class AlertSystem:
         self._command_handler: Optional[CommandHandler] = None
         self._poll_offset: int = 0          # Telegram getUpdates offset
         self._poll_task: Optional[asyncio.Task] = None
+        self._muted: bool = False           # suppress all outgoing messages when True
+
+    @property
+    def is_muted(self) -> bool:
+        return self._muted
+
+    def mute(self) -> None:
+        """Silence all Telegram/Discord outgoing messages. Trading continues normally."""
+        self._muted = True
+        logger.info("AlertSystem muted — alerts suppressed, trading active")
+
+    def unmute(self) -> None:
+        """Re-enable Telegram/Discord outgoing messages."""
+        self._muted = False
+        logger.info("AlertSystem unmuted — alerts restored")
 
     def set_command_handler(self, handler: CommandHandler) -> None:
         """Register async callback for incoming Telegram bot commands."""
@@ -199,6 +214,8 @@ class AlertSystem:
     async def _send_telegram(self, text: str) -> None:
         if not settings.telegram_bot_token or not settings.telegram_chat_id:
             return
+        if self._muted:
+            return  # notifications silenced — trading continues normally
         url = f"{TELEGRAM_API}/bot{settings.telegram_bot_token}/sendMessage"
         payload = {
             "chat_id": settings.telegram_chat_id,
@@ -218,6 +235,8 @@ class AlertSystem:
     async def _send_discord(self, text: str) -> None:
         if not settings.discord_webhook_url:
             return
+        if self._muted:
+            return  # notifications silenced — trading continues normally
         # Convert Markdown bold to Discord-compatible
         clean = text.replace("*", "**").replace("`", "`")
         payload = {"content": clean}

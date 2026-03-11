@@ -225,7 +225,7 @@ class TradingSystem:
 
     # ── Telegram command handler ───────────────────────────────────────────
     async def _handle_telegram_command(self, cmd: str) -> None:
-        """Handle /pause, /resume, /status, /help commands from Telegram."""
+        """Handle /pause, /resume, /mute, /unmute, /status, /help commands from Telegram."""
         if cmd in ("pause", "stop_trading"):
             self._bot_paused = True
             await self._alerts.send_text(
@@ -243,12 +243,30 @@ class TradingSystem:
             )
             logger.info("Bot trading resumed via Telegram command")
 
+        elif cmd == "mute":
+            # Confirm BEFORE muting so the user receives this last message
+            await self._alerts.send_text(
+                "🔕 *Notifications MUTED*\n\n"
+                "Bot continues scanning and trading normally.\n"
+                "No further alerts will be sent until you send /unmute."
+            )
+            self._alerts.mute()
+
+        elif cmd == "unmute":
+            self._alerts.unmute()
+            await self._alerts.send_text(
+                "🔔 *Notifications RESTORED*\n\n"
+                "All trade alerts are active again."
+            )
+
         elif cmd == "status":
             positions = await self._portfolio.get_open_positions()
-            state_label = "⏸ PAUSED (no new trades)" if self._bot_paused else "▶️ RUNNING"
+            trade_label = "⏸ PAUSED (no new trades)" if self._bot_paused else "▶️ RUNNING"
+            alert_label = "🔕 MUTED" if self._alerts.is_muted else "🔔 ON"
             await self._alerts.send_text(
                 f"📊 *Bot Status*\n\n"
-                f"State: `{state_label}`\n"
+                f"Trading: `{trade_label}`\n"
+                f"Alerts: `{alert_label}`\n"
                 f"Open positions: `{len(positions)}`\n"
                 f"Daily trades left: `{self._risk.daily_trades_remaining}`\n"
                 f"Watchlist: `{len(self._watchlist)}` symbols\n"
@@ -262,6 +280,8 @@ class TradingSystem:
                 "/status — show current bot status\n"
                 "/pause — pause trading (no new trades)\n"
                 "/resume — resume trading\n"
+                "/mute — silence all notifications (trading continues)\n"
+                "/unmute — restore notifications\n"
                 "/help — show this message"
             )
 
