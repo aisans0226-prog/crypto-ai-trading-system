@@ -16,7 +16,10 @@ FILES = [
     "config.py",
     "dashboard/api_server.py",
     "dashboard/dashboard.html",
+    "scanners/market_scanner.py",
     "scanners/research_engine.py",
+    "trading/risk_manager.py",
+    "data_engine/coin_database.py",
     "ai_engine/__init__.py",
     "ai_engine/llm_analyzer.py",
 ]
