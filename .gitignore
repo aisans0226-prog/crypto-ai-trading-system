@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+pip-wheel-metadata/
+*.whl
+
+# Virtual environment
+venv/
+.venv/
+env/
+.env
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Logs
+logs/
+*.log
+
+# Database
+*.db
+*.sqlite3
+
+# ML models (large binary files)
+ml_models/saved_models/*.pkl
+ml_models/saved_models/*.keras
+ml_models/saved_models/*.h5
+
+# Secrets
+*.pem
+*.key
+secrets/
+
+# Test
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
