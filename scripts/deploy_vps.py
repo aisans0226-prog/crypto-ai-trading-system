@@ -28,6 +28,8 @@ FILES = [
     "scanners/market_scanner.py",
     "scanners/research_engine.py",
     "trading/risk_manager.py",
+    "trading/trade_executor.py",
+    "portfolio/portfolio_manager.py",
     "ai_engine/__init__.py",
     "ai_engine/llm_analyzer.py",
 ]
