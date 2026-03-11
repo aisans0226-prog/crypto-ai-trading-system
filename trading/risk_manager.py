@@ -42,6 +42,7 @@ class RiskManager:
         self._account_balance: float = settings.account_balance_usdt
         self._daily_trades: int = 0
         self._daily_date: date = date.today()
+        self._daily_pnl: float = 0.0      # realized PnL for today (resets each UTC day)
 
     # ── Public ────────────────────────────────────────────────────────────
     def update_balance(self, balance: float) -> None:
@@ -54,12 +55,27 @@ class RiskManager:
         today = date.today()
         if today != self._daily_date:
             self._daily_trades = 0
+            self._daily_pnl = 0.0
             self._daily_date = today
 
     def record_trade_opened(self) -> None:
         """Call once per trade successfully opened."""
         self._reset_daily_if_needed()
         self._daily_trades += 1
+
+    def record_trade_closed(self, pnl: float) -> None:
+        """Call every time a position closes to track daily realized PnL."""
+        self._reset_daily_if_needed()
+        self._daily_pnl += pnl
+
+    @property
+    def daily_loss_exceeded(self) -> bool:
+        """True when today's realized loss has hit the configured limit."""
+        self._reset_daily_if_needed()
+        if settings.max_daily_loss_pct <= 0:
+            return False
+        loss_limit = self._account_balance * (settings.max_daily_loss_pct / 100.0)
+        return self._daily_pnl <= -loss_limit
 
     @property
     def daily_trades_remaining(self) -> int:
@@ -78,6 +94,12 @@ class RiskManager:
             logger.warning(
                 "Daily trade limit reached ({}/{}). Resuming tomorrow.",
                 self._daily_trades, settings.max_daily_trades,
+            )
+            return False
+        if self.daily_loss_exceeded:
+            logger.warning(
+                "Daily loss limit reached ({:.2f} USDT = {:.1f}% of balance). No new trades today.",
+                abs(self._daily_pnl), settings.max_daily_loss_pct,
             )
             return False
         return True
@@ -102,6 +124,16 @@ class RiskManager:
             logger.warning("{} SHORT stop ({}) must be above entry ({})",
                            symbol, stop_loss, entry_price)
             return None
+
+        # ── Stop-loss cap ─────────────────────────────────────────────────────
+        # Enforce maximum SL distance so the strategy can never risk more than
+        # max_stop_loss_pct % of entry, even if a technical level is further away.
+        if settings.max_stop_loss_pct > 0:
+            max_sl_dist = entry_price * (settings.max_stop_loss_pct / 100.0)
+            if direction == "LONG":
+                stop_loss = max(stop_loss, entry_price - max_sl_dist)
+            else:
+                stop_loss = min(stop_loss, entry_price + max_sl_dist)
 
         # ── Risk-reward check ─────────────────────────────────────────────
         if direction == "LONG":

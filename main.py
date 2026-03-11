@@ -837,6 +837,7 @@ class TradingSystem:
         """
         await self._portfolio.close_position(symbol, exit_price, pnl)
         self._position_meta.pop(symbol, None)
+        self._risk.record_trade_closed(pnl)   # update daily PnL for loss-limit guard
 
         trade_id = self._pending_labels.pop(symbol, None)
         if trade_id:
@@ -916,29 +917,26 @@ class TradingSystem:
 
         # ── 3. Breakeven stop ─────────────────────────────────────────────
         if settings.breakeven_stop_enabled and not meta.get("breakeven_done"):
-            tp_dist = abs(tp - entry)
-            if tp_dist > 0 and profit_pct > 0:
-                progress_ratio = abs(current_price - entry) / tp_dist
-                if progress_ratio >= 0.5:
-                    buffer = entry * 0.001                              # +0.1 % protection
-                    new_sl = (entry + buffer) if direction == "LONG" else (entry - buffer)
-                    improves = (
-                        (direction == "LONG" and new_sl > sl) or
-                        (direction == "SHORT" and new_sl < sl)
+            if profit_pct >= settings.breakeven_trigger_pct:
+                buffer = entry * 0.001                              # +0.1 % protection
+                new_sl = (entry + buffer) if direction == "LONG" else (entry - buffer)
+                improves = (
+                    (direction == "LONG" and new_sl > sl) or
+                    (direction == "SHORT" and new_sl < sl)
+                )
+                if improves:
+                    await self._update_sl_on_exchange(
+                        symbol, direction, quantity, new_sl, meta, executor
                     )
-                    if improves:
-                        await self._update_sl_on_exchange(
-                            symbol, direction, quantity, new_sl, meta, executor
-                        )
-                        pos_data["stop_loss"] = new_sl
-                        sl = new_sl  # keep local var fresh for the trailing check below
-                        await self._portfolio.update_position_field(symbol, "stop_loss", new_sl)
-                        meta["breakeven_done"] = True
-                        logger.info("{} breakeven SL set @ {:.6f}", symbol, new_sl)
-                        await self._alerts.send_text(
-                            f"🟡 *{symbol}* | SL → Breakeven\n"
-                            f"SL moved to {new_sl:.4f} (profit: {profit_pct:.2f}%)"
-                        )
+                    pos_data["stop_loss"] = new_sl
+                    sl = new_sl  # keep local var fresh for the trailing check below
+                    await self._portfolio.update_position_field(symbol, "stop_loss", new_sl)
+                    meta["breakeven_done"] = True
+                    logger.info("{} breakeven SL set @ {:.6f}", symbol, new_sl)
+                    await self._alerts.send_text(
+                        f"🟡 *{symbol}* | SL → Breakeven\n"
+                        f"SL moved to {new_sl:.4f} (profit: {profit_pct:.2f}%)"
+                    )
 
         # ── 4. Trailing stop ──────────────────────────────────────────────
         if (
