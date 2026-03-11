@@ -14,6 +14,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import List
@@ -50,7 +51,7 @@ class AutoUpdater:
         return out[:8] if rc == 0 else ""
 
     async def check_for_update(self) -> dict:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         remote = await loop.run_in_executor(None, self._get_remote_commit)
         self._latest_commit = remote
         self._update_available = bool(remote and remote != self._current_commit[:8])
@@ -61,7 +62,7 @@ class AutoUpdater:
         }
 
     async def apply_update(self) -> dict:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._do_update)
 
     def _do_update(self) -> dict:
@@ -81,7 +82,7 @@ class AutoUpdater:
             self._current_commit = new_commit
             self._update_available = False
             logger.info("Update applied: {}", result["message"])
-            asyncio.get_event_loop().call_later(3, self._restart)
+            threading.Timer(3, self._restart).start()   # delayed restart (thread-safe)
         except Exception as exc:
             result["message"] = str(exc)
             logger.error("Update failed: {}", exc)
@@ -101,7 +102,7 @@ class AutoUpdater:
         os.execv(sys.executable, [sys.executable] + sys.argv)
 
     async def rollback(self) -> dict:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._do_rollback)
 
     def _do_rollback(self) -> dict:
@@ -114,7 +115,7 @@ class AutoUpdater:
         if rc2 != 0:
             return {"success": False, "message": err2}
         self._current_commit = self._get_current_commit()
-        asyncio.get_event_loop().call_later(3, self._restart)
+        threading.Timer(3, self._restart).start()    # delayed restart (thread-safe)
         return {"success": True, "commit": prev_hash, "message": f"Rolled back to {prev_hash}"}
 
     async def start_polling(self) -> None:

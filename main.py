@@ -83,9 +83,12 @@ class TradingSystem:
         self._updater = AutoUpdater()
 
         # Self-learning tracking
-        self._pending_labels: Dict[str, str] = {}   # symbol -> trade_id
-        self._prev_open_symbols: set = set()
-        self._klines_cache: Dict[str, object] = {}  # symbol -> DataFrame for ranking
+        self._pending_labels: Dict[str, str] = {}     # symbol -> trade_id
+        self._prev_open_positions: Dict[str, dict] = {}  # symbol -> position snapshot
+        self._klines_cache: Dict[str, object] = {}   # symbol -> DataFrame for ranking
+
+        # WS feed handle (populated in start())
+        self._ws_feed = None
 
         # Strategy stack
         self._strategies = [
@@ -125,7 +128,7 @@ class TradingSystem:
         symbols = await self._data_engine.get_binance_symbols()
         symbols = symbols[: settings.max_coins_to_scan]
 
-        ws_feed = BinanceWebSocketFeed(self._cache, symbols)
+        self._ws_feed = BinanceWebSocketFeed(self._cache, symbols)
         self._cache.register_callback(self._on_ws_event)
 
         logger.info("System ready — scanning {} coins", len(symbols))
@@ -138,7 +141,7 @@ class TradingSystem:
 
         # Run all async tasks
         await asyncio.gather(
-            ws_feed.start(),
+            self._ws_feed.start(),
             self._scan_loop(),
             self._arbitrage_loop(symbols),
             self._portfolio_sync_loop(),
@@ -149,6 +152,8 @@ class TradingSystem:
 
     async def stop(self) -> None:
         self._running = False
+        if self._ws_feed:
+            await self._ws_feed.stop()
         await self._data_engine.stop()
         await self._alerts.stop()
         await self._sentiment.stop()
@@ -378,21 +383,20 @@ class TradingSystem:
             try:
                 positions = await self._portfolio.get_open_positions()
                 current_open = set(positions.keys())
+                prev_open = set(self._prev_open_positions.keys())
 
                 # Detect newly closed positions and label for self-learning
-                closed_symbols = self._prev_open_symbols - current_open
+                closed_symbols = prev_open - current_open
                 for sym in closed_symbols:
                     trade_id = self._pending_labels.pop(sym, None)
                     if trade_id:
-                        # Estimate outcome from last known price vs entry
-                        pos_data = next(
-                            (p for p in positions.values() if p.get("symbol") == sym),
-                            None,
-                        )
-                        pnl = pos_data.get("pnl_usdt", 0.0) if pos_data else 0.0
+                        # Use PnL from the last known snapshot of the closed position
+                        prev_data = self._prev_open_positions.get(sym, {})
+                        pnl = prev_data.get("pnl_usdt", 0.0)
                         self._learner.label_trade(trade_id, pnl)
 
-                self._prev_open_symbols = current_open
+                # Save current positions as snapshot for next cycle
+                self._prev_open_positions = dict(positions)
 
                 metrics = await self._portfolio.calculate_metrics()
                 if metrics:
@@ -435,7 +439,7 @@ def parse_args() -> argparse.Namespace:
 async def run_trading(args: argparse.Namespace) -> None:
     system = TradingSystem(exchange=args.exchange, dry_run=args.dry_run)
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def _shutdown(*_):
         logger.info("Shutdown signal received …")

@@ -102,7 +102,7 @@ class SelfLearningEngine:
     async def _retrain(self) -> None:
         if not XGB_AVAILABLE or len(self._samples_y) < 30:
             return
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._do_retrain)
 
     def _do_retrain(self) -> None:

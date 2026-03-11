@@ -50,7 +50,7 @@ class CoinRanker:
         self, klines: Dict[str, pd.DataFrame],
         ml_predictions: Optional[Dict[str, float]] = None,
     ) -> List[CoinRank]:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         results: List[CoinRank] = []
         for symbol, df in klines.items():
             if len(df) < 50:
@@ -117,8 +117,9 @@ class CoinRanker:
                 corr_penalty = max(0, corr - 0.5) * 0.2
 
         composite = (
-            momentum_score * 0.30 + vol_score_val * 0.15 + trend_score * 0.25
-            + ml_conf * 0.20 + win_rate * 0.10 - corr_penalty
+            momentum_score * 0.25 + vol_score * 0.10 + vol_score_val * 0.15
+            + trend_score * 0.25 + ml_conf * 0.15 + win_rate * 0.10
+            - corr_penalty
         )
         composite = round(max(0.0, min(1.0, composite)), 4)
 
