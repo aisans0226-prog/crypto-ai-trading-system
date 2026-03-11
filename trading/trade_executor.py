@@ -49,6 +49,17 @@ class BinanceExecutor:
             self._secret.encode(), query.encode(), hashlib.sha256
         ).hexdigest()
 
+    async def _get(self, path: str, params: dict) -> any:
+        params["timestamp"] = int(time.time() * 1000)
+        params["signature"] = self._sign(params)
+        headers = {"X-MBX-APIKEY": self._key}
+        url = self._base + path
+        async with self._session.get(url, headers=headers, params=params) as r:
+            data = await r.json()
+            if r.status != 200:
+                logger.error("Binance API GET error {}: {}", r.status, data)
+            return data
+
     async def _post(self, path: str, params: dict) -> dict:
         params["timestamp"] = int(time.time() * 1000)
         params["signature"] = self._sign(params)
@@ -58,6 +69,7 @@ class BinanceExecutor:
             data = await r.json()
             if r.status != 200:
                 logger.error("Binance API error {}: {}", r.status, data)
+                raise Exception(f"Binance API error {r.status}: {data.get('msg', 'unknown')}")
             return data
 
     # ── Set leverage ──────────────────────────────────────────────────────
@@ -140,6 +152,41 @@ class BinanceExecutor:
 
         return result
 
+    async def get_open_positions(self) -> list:
+        """Returns list of currently open positions from Binance Futures."""
+        try:
+            data = await self._get("/fapi/v2/positionRisk", {})
+            return [p for p in data if float(p.get("positionAmt", 0)) != 0]
+        except Exception as exc:
+            logger.debug("get_open_positions Binance error: {}", exc)
+            return []
+
+    async def get_account_balance(self) -> float:
+        """Get available USDT balance from Binance Futures."""
+        try:
+            assets = await self._get("/fapi/v2/balance", {})
+            for asset in assets:
+                if asset.get("asset") == "USDT":
+                    return float(asset.get("availableBalance", 0))
+        except Exception as exc:
+            logger.debug("get_account_balance Binance error: {}", exc)
+        return 0.0
+
+    async def get_recent_pnl(self, symbol: str) -> float:
+        """Get total realized PnL for a symbol in the last 24 hours."""
+        try:
+            start_time = int((time.time() - 86400) * 1000)
+            data = await self._get("/fapi/v1/income", {
+                "symbol": symbol,
+                "incomeType": "REALIZED_PNL",
+                "startTime": start_time,
+                "limit": 50,
+            })
+            return sum(float(r.get("income", 0)) for r in data)
+        except Exception as exc:
+            logger.debug("get_recent_pnl Binance error {}: {}", symbol, exc)
+        return 0.0
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Bybit Futures Executor
@@ -169,6 +216,25 @@ class BybitExecutor:
         return hmac.new(
             self._secret.encode(), sign_str.encode(), hashlib.sha256
         ).hexdigest()
+
+    async def _get(self, path: str, params: dict) -> dict:
+        import json as _json
+        ts = str(int(time.time() * 1000))
+        recv_window = "5000"
+        params_str = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
+        sig = self._gen_signature(ts, params_str)
+        headers = {
+            "X-BAPI-API-KEY": self._key,
+            "X-BAPI-TIMESTAMP": ts,
+            "X-BAPI-SIGN": sig,
+            "X-BAPI-RECV-WINDOW": recv_window,
+        }
+        url = self._base + path
+        async with self._session.get(url, headers=headers, params=params) as r:
+            data = await r.json()
+            if data.get("retCode") != 0:
+                logger.error("Bybit API GET error: {}", data)
+            return data
 
     async def _post(self, path: str, body: dict) -> dict:
         import json
@@ -209,12 +275,39 @@ class BybitExecutor:
                 "timeInForce": "GoodTillCancel",
             }
             resp = await self._post("/v5/order/create", body)
-            result["order_id"] = resp.get("result", {}).get("orderId")
-            result["status"] = "open"
-            logger.info("Bybit trade opened: {}", result)
+            if resp.get("retCode") != 0:
+                result["status"] = "error"
+                result["error"] = resp.get("retMsg", "Bybit API error")
+                logger.error("Bybit order rejected ({}): {}", params.symbol, resp.get("retMsg"))
+            else:
+                result["order_id"] = resp.get("result", {}).get("orderId")
+                result["status"] = "open"
+                logger.info("Bybit trade opened: {}", result)
         except Exception as exc:
             result["status"] = "error"
             result["error"] = str(exc)
             logger.error("Bybit trade execution failed ({}): {}", params.symbol, exc)
 
         return result
+
+    async def get_open_positions(self) -> list:
+        """Returns list of currently open positions from Bybit."""
+        try:
+            data = await self._get("/v5/position/list", {"category": "linear", "settleCoin": "USDT"})
+            positions = data.get("result", {}).get("list", [])
+            return [p for p in positions if float(p.get("size", 0)) != 0]
+        except Exception as exc:
+            logger.debug("get_open_positions Bybit error: {}", exc)
+            return []
+
+    async def get_account_balance(self) -> float:
+        """Get available USDT balance from Bybit."""
+        try:
+            data = await self._get("/v5/account/wallet-balance", {"accountType": "CONTRACT"})
+            coins = data.get("result", {}).get("list", [{}])[0].get("coin", [])
+            for coin in coins:
+                if coin.get("coin") == "USDT":
+                    return float(coin.get("availableToWithdraw", 0))
+        except Exception as exc:
+            logger.debug("get_account_balance Bybit error: {}", exc)
+        return 0.0

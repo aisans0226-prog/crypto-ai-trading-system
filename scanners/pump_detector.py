@@ -4,7 +4,7 @@ scanners/pump_detector.py — Detect pump signals using volume, price, and OI.
 Scoring breakdown (max 6 points):
   +1  volume spike  ≥ 2× 20-bar average
   +1  strong price move  ≥ 3 % in last candle
-  +1  OI increasing  ≥ 5 % change
+  +1  OI increasing  ≥ 0.5 % change
   +1  RSI < 70 (not overbought on entry)
   +1  price above 20-EMA (trend confirmation)
   +1  funding rate neutral / negative (room to run long)

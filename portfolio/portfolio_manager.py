@@ -77,8 +77,45 @@ class PortfolioManager:
     async def start(self) -> None:
         async with self._engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-        self._redis = await aioredis.from_url(settings.redis_url)
-        logger.info("PortfolioManager started")
+        try:
+            self._redis = await aioredis.from_url(settings.redis_url)
+            await self._redis.ping()
+            logger.info("PortfolioManager started (Redis connected)")
+        except Exception as exc:
+            logger.warning("Redis unavailable ({}), running in-memory mode", exc)
+            self._redis = None
+        # Re-sync in-memory + Redis from DB — prevents stale state across restarts
+        await self._reload_open_positions()
+
+    async def _reload_open_positions(self) -> None:
+        """Load open trades from DB into memory + Redis on startup (DB is source of truth)."""
+        async with self._session_factory() as session:
+            from sqlalchemy import select
+            result = await session.execute(
+                select(TradeRecord).where(TradeRecord.status == "open")
+            )
+            trades = result.scalars().all()
+
+        self._open_positions = {
+            t.symbol: {
+                "id": t.id,
+                "symbol": t.symbol,
+                "direction": t.direction,
+                "entry_price": t.entry_price,
+                "stop_loss": t.stop_loss,
+                "take_profit": t.take_profit,
+                "quantity": t.quantity,
+                "leverage": t.leverage,
+                "position_size_usdt": round(t.quantity * t.entry_price, 2),
+                "exchange": t.exchange,
+                "order_id": t.order_id or "",
+                "signal_score": t.signal_score,
+            }
+            for t in trades
+        }
+        if self._redis:
+            await self._redis.set("portfolio:positions", json.dumps(self._open_positions))
+        logger.info("Reloaded {} open positions from DB on startup", len(self._open_positions))
 
     async def stop(self) -> None:
         if self._redis:

@@ -86,6 +86,8 @@ class TradingSystem:
         self._pending_labels: Dict[str, str] = {}     # symbol -> trade_id
         self._prev_open_positions: Dict[str, dict] = {}  # symbol -> position snapshot
         self._klines_cache: Dict[str, object] = {}   # symbol -> DataFrame for ranking
+        self._ml_predictions_cache: Dict[str, float] = {}  # symbol -> ml confidence
+        self._signal_cooldowns: Dict[str, float] = {}      # symbol -> last signal timestamp
 
         # WS feed handle (populated in start())
         self._ws_feed = None
@@ -159,6 +161,7 @@ class TradingSystem:
             self._scan_loop(),
             self._arbitrage_loop(symbols),
             self._portfolio_sync_loop(),
+            self._position_monitor_loop(),
             self._coin_ranking_loop(),
             self._updater.start_polling(),
             return_exceptions=True,
@@ -196,6 +199,12 @@ class TradingSystem:
                     if not signal.is_high_probability:
                         continue
 
+                    # Per-symbol cooldown — avoid duplicate signals within 5 minutes
+                    now = time.time()
+                    if now - self._signal_cooldowns.get(signal.symbol, 0) < 300:
+                        continue
+                    self._signal_cooldowns[signal.symbol] = now
+
                     # ML prediction boost
                     try:
                         df = await self._data_engine.get_klines_binance(
@@ -205,6 +214,8 @@ class TradingSystem:
                         signal.score += ml_score
                         signal.ai_prediction = confidence
                         signal.confidence = confidence
+                        # Cache ML confidence for CoinRanker
+                        self._ml_predictions_cache[signal.symbol] = confidence
                         # Record feature vector for self-learning
                         trade_id = f"{signal.symbol}_{int(time.time())}"
                         self._learner.record_prediction(trade_id, signal.symbol, df)
@@ -227,7 +238,7 @@ class TradingSystem:
                     if not signal.is_high_probability:
                         continue
 
-                    # Store in dashboard state
+                    # Store in dashboard state (cap at 500 to prevent memory leak)
                     state.recent_signals.append({
                         "symbol": signal.symbol,
                         "score": signal.score,
@@ -237,6 +248,8 @@ class TradingSystem:
                         "price_change_pct": signal.price_change_pct,
                         "ai_prediction": signal.ai_prediction,
                     })
+                    if len(state.recent_signals) > 500:
+                        state.recent_signals = state.recent_signals[-500:]
 
                     # Send alert
                     await self._alerts.send_trade_signal(signal)
@@ -347,7 +360,10 @@ class TradingSystem:
                     except Exception:
                         pass
 
-                    rankings = await self._ranker.rank(self._klines_cache)
+                    rankings = await self._ranker.rank(
+                        self._klines_cache,
+                        ml_predictions=dict(self._ml_predictions_cache),
+                    )
                     state.coin_rankings = [
                         {
                             "symbol": r.symbol,
@@ -395,6 +411,17 @@ class TradingSystem:
     async def _portfolio_sync_loop(self) -> None:
         while self._running:
             try:
+                # Fetch actual balance from exchange (not config default)
+                if not self.dry_run:
+                    try:
+                        executor = self._bybit_exec if self.exchange == "bybit" else self._binance_exec
+                        exchange_balance = await executor.get_account_balance()
+                        if exchange_balance > 0:
+                            await self._portfolio.update_balance(exchange_balance)
+                            self._risk.update_balance(exchange_balance)
+                    except Exception as exc:
+                        logger.debug("Balance fetch error: {}", exc)
+
                 positions = await self._portfolio.get_open_positions()
                 current_open = set(positions.keys())
                 prev_open = set(self._prev_open_positions.keys())
@@ -424,6 +451,94 @@ class TradingSystem:
     async def _sync_open_trades(self) -> None:
         positions = await self._portfolio.get_open_positions()
         self._risk.update_open_trades(len(positions))
+
+    # ── Position monitor ───────────────────────────────────────────────────
+    async def _position_monitor_loop(self) -> None:
+        """Poll exchange every 30s to detect SL/TP fills and close positions."""
+        while self._running:
+            try:
+                if self.dry_run:
+                    await self._check_dryrun_positions()
+                else:
+                    executor = self._bybit_exec if self.exchange == "bybit" else self._binance_exec
+                    exchange_positions = await executor.get_open_positions()
+                    exchange_symbols = {
+                        p.get("symbol") for p in exchange_positions
+                    }
+                    portfolio_positions = await self._portfolio.get_open_positions()
+
+                    for symbol, pos_data in list(portfolio_positions.items()):
+                        if symbol not in exchange_symbols:
+                            # Position no longer on exchange — SL or TP was triggered
+                            pnl = 0.0
+                            if hasattr(executor, "get_recent_pnl"):
+                                try:
+                                    pnl = await executor.get_recent_pnl(symbol)
+                                except Exception:
+                                    pass
+
+                            await self._portfolio.close_position(symbol, 0.0, pnl)
+
+                            trade_id = self._pending_labels.pop(symbol, None)
+                            if trade_id:
+                                self._learner.label_trade(trade_id, pnl)
+
+                            self._risk.update_open_trades(
+                                len(await self._portfolio.get_open_positions())
+                            )
+                            outcome = "✅ TP hit" if pnl > 0 else "🛑 SL hit"
+                            await self._alerts.send_text(
+                                f"📊 Position closed: {symbol}\n"
+                                f"{outcome} | PnL: {pnl:+.2f} USDT"
+                            )
+                            await broadcast("position_closed", {"symbol": symbol, "pnl": pnl})
+                            logger.info("Position monitor: closed {} PnL={:.2f}", symbol, pnl)
+            except Exception as exc:
+                logger.debug("Position monitor error: {}", exc)
+            await asyncio.sleep(30)
+
+    async def _check_dryrun_positions(self) -> None:
+        """Dry-run: simulate position closing when current price hits SL or TP."""
+        portfolio_positions = await self._portfolio.get_open_positions()
+        for symbol, pos_data in list(portfolio_positions.items()):
+            try:
+                ticker = self._cache.tickers.get(symbol, {})
+                current_price = float(ticker.get("c", pos_data.get("entry_price", 0)))
+                if current_price <= 0:
+                    continue
+
+                direction = pos_data.get("direction", "LONG")
+                entry = float(pos_data.get("entry_price", 0))
+                sl = float(pos_data.get("stop_loss", 0))
+                tp = float(pos_data.get("take_profit", 0))
+                qty = float(pos_data.get("quantity", 0))
+
+                hit_price = None
+                if direction == "LONG":
+                    if current_price <= sl:
+                        hit_price = sl
+                    elif current_price >= tp:
+                        hit_price = tp
+                else:
+                    if current_price >= sl:
+                        hit_price = sl
+                    elif current_price <= tp:
+                        hit_price = tp
+
+                if hit_price:
+                    pnl = (hit_price - entry) * qty if direction == "LONG" else (entry - hit_price) * qty
+                    await self._portfolio.close_position(symbol, hit_price, pnl)
+                    trade_id = self._pending_labels.pop(symbol, None)
+                    if trade_id:
+                        self._learner.label_trade(trade_id, pnl)
+                    self._risk.update_open_trades(
+                        len(await self._portfolio.get_open_positions())
+                    )
+                    outcome = "✅ TP hit" if pnl > 0 else "🛑 SL hit"
+                    logger.info("[DRY RUN] {} {} PnL={:.2f} USDT", symbol, outcome, pnl)
+                    await broadcast("position_closed", {"symbol": symbol, "pnl": pnl})
+            except Exception as exc:
+                logger.debug("Dry run position check error {}: {}", symbol, exc)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

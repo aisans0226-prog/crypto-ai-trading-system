@@ -1,10 +1,11 @@
 """
 scanners/memecoin_scanner.py — Detect early-stage memecoin / narrative pumps.
 
-Scoring breakdown (max 3 points):
+Scoring breakdown (max 4 points):
   +1  24h price change  ≥ 10 %
   +1  volume / market-cap proxy surge
   +1  breakout above recent 48-candle high
+  +1  meme-coin narrative bonus (if is_meme and base score ≥ 2)
 """
 from typing import List, Tuple
 import pandas as pd
@@ -44,8 +45,8 @@ class MemecoinScanner:
                 score += 1
                 signals.append("large_24h_move")
 
-            # ── Volume surge above 5-day average proxy ───────────────────
-            avg_vol = df["volume"].rolling(96).mean().iloc[-1]  # 96 × 15m ≈ 1 day
+            # ── Volume surge above 1-day average proxy ───────────────────
+            avg_vol = df["volume"].rolling(96).mean().iloc[-1]  # 96 × 15m = 24 h
             last_vol = df["volume"].iloc[-1]
             if avg_vol > 0 and last_vol > avg_vol * 3.0:
                 score += 1
