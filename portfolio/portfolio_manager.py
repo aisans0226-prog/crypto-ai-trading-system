@@ -185,7 +185,11 @@ class PortfolioManager:
             await self._redis.set(
                 "portfolio:positions", json.dumps(self._open_positions)
             )
-        logger.info("Position closed: {} PnL={:.2f}", symbol, pnl)
+        # Update equity balance immediately so metrics reflect realized PnL
+        self._balance = max(0.0, self._balance + pnl)
+        if self._redis:
+            await self._redis.set("portfolio:balance", self._balance)
+        logger.info("Position closed: {} PnL={:.2f} | balance={:.2f}", symbol, pnl, self._balance)
 
     # ── Performance metrics ───────────────────────────────────────────────
     async def calculate_metrics(self) -> dict:
@@ -199,6 +203,7 @@ class PortfolioManager:
         # Always return base metrics so dashboard and WS broadcast work from startup
         base: dict = {
             "total_trades": 0,
+            "open_trades": len(self._open_positions),
             "win_rate": 0.0,
             "profit_factor": 0.0,
             "max_drawdown_pct": 0.0,
@@ -220,14 +225,16 @@ class PortfolioManager:
         # Cap at 99.99 when no losses (avoids JSON serialization of float('inf'))
         profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else (99.99 if gross_profit > 0 else 0.0)
 
-        # Max drawdown — peak starts at 0 (initial equity baseline)
-        cumulative = [sum(pnls[:i+1]) for i in range(len(pnls))]
-        peak = 0.0
+        # Max drawdown — equity curve starts from initial balance, not 0
+        # This correctly captures drawdown even when all trades are losing
+        initial_balance = settings.account_balance_usdt
+        cumulative = [initial_balance + sum(pnls[:i+1]) for i in range(len(pnls))]
+        peak = initial_balance
         max_dd = 0.0
         for val in cumulative:
             if val > peak:
                 peak = val
-            dd = (peak - val) / abs(peak) * 100 if peak != 0 else 0.0
+            dd = (peak - val) / peak * 100 if peak > 0 else 0.0
             max_dd = max(max_dd, dd)
 
         # Use UTC date to match UTC-stored closed_at timestamps
@@ -249,6 +256,7 @@ class PortfolioManager:
 
         return {
             "total_trades": len(trades),
+            "open_trades": len(self._open_positions),
             "win_rate": round(win_rate, 2),
             "profit_factor": profit_factor,
             "max_drawdown_pct": round(max_dd, 2),

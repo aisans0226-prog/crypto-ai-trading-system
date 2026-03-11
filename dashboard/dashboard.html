@@ -492,7 +492,11 @@ function bPC(m){
 function bWL(m){
   var ctx=document.getElementById('wlc');if(!ctx)return;if(wC)wC.destroy();
   var tot=m.total_trades||0,wins=Math.round((m.win_rate||0)/100*tot),losses=tot-wins;
-  wC=new Chart(ctx,{type:'doughnut',data:{labels:['Wins','Losses'],datasets:[{data:[wins||1,losses||1],backgroundColor:['#10b981','#ff4466'],borderWidth:0,hoverOffset:4}]},options:{responsive:true,maintainAspectRatio:false,cutout:'70%',plugins:{legend:{position:'bottom',labels:{color:'#64748b',padding:10,boxWidth:10}}}}});
+  if(!tot){
+    wC=new Chart(ctx,{type:'doughnut',data:{labels:['No trades yet'],datasets:[{data:[1],backgroundColor:['#1c2a3e'],borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,cutout:'70%',plugins:{legend:{position:'bottom',labels:{color:'#64748b',padding:10,boxWidth:10}}}}});
+    return;
+  }
+  wC=new Chart(ctx,{type:'doughnut',data:{labels:['Wins','Losses'],datasets:[{data:[wins,losses],backgroundColor:['#10b981','#ff4466'],borderWidth:0,hoverOffset:4}]},options:{responsive:true,maintainAspectRatio:false,cutout:'70%',plugins:{legend:{position:'bottom',labels:{color:'#64748b',padding:10,boxWidth:10}}}}});
 }
 
 async function lSD(){var d=await ap('/api/signals');aS=d.signals||[];rSig();dSig();}
