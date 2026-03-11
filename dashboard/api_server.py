@@ -8,12 +8,13 @@ import json
 from datetime import datetime
 from typing import List
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from loguru import logger
 
 from config import settings
+import ai_engine.llm_analyzer as llm_analyzer
 
 app = FastAPI(title="Crypto AI Dashboard", version="2.0.0", docs_url="/docs")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
@@ -53,6 +54,24 @@ async def health():
     return {"status": "ok", "ts": datetime.utcnow().isoformat()}
 
 
+async def _fetch_current_prices(symbols: list) -> dict:
+    """Fetch current mark prices for symbols from Binance public API (no auth required)."""
+    import aiohttp
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                "https://api.binance.com/api/v3/ticker/price",
+                timeout=aiohttp.ClientTimeout(total=3)
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    sym_set = set(symbols)
+                    return {item["symbol"]: float(item["price"]) for item in data if item["symbol"] in sym_set}
+    except Exception:
+        pass
+    return {}
+
+
 @app.get("/api/portfolio")
 async def get_portfolio():
     if not state.portfolio_manager:
@@ -60,6 +79,22 @@ async def get_portfolio():
     balance = await state.portfolio_manager.get_balance()
     positions = await state.portfolio_manager.get_open_positions()
     exposure = await state.portfolio_manager.get_risk_exposure()
+
+    # Enrich each open position with current price + unrealized PnL
+    if positions:
+        prices = await _fetch_current_prices(list(positions.keys()))
+        for sym, pos in positions.items():
+            cp = prices.get(sym)
+            if cp:
+                qty = pos.get("quantity", 0)
+                entry = pos.get("entry_price", 0)
+                size = pos.get("position_size_usdt") or (qty * entry) or 1
+                direction = pos.get("direction", "LONG")
+                upnl = (cp - entry) * qty if direction == "LONG" else (entry - cp) * qty
+                pos["current_price"] = round(cp, 6)
+                pos["unrealized_pnl_usdt"] = round(upnl, 2)
+                pos["unrealized_pnl_pct"] = round(upnl / size * 100, 2) if size else 0
+
     return {"balance": balance, "positions": positions, "risk_exposure": exposure}
 
 
@@ -213,18 +248,277 @@ async def get_research_log(limit: int = 50):
     return {"log": log}
 
 
+# ---------------------------------------------------------------------------
+# AI LLM Integration endpoints
+# ---------------------------------------------------------------------------
+
+# Runtime AI config — loaded from settings on startup, updatable via API
+_ai_cfg: dict = {}
+
+
+def _load_ai_cfg() -> None:
+    """Populate runtime config from pydantic settings."""
+    _ai_cfg.update({
+        "provider":           settings.ai_provider,
+        "model":              settings.ai_model,
+        "enabled":            settings.ai_analysis_enabled,
+        "openai_api_key":     settings.openai_api_key,
+        "anthropic_api_key":  settings.anthropic_api_key,
+        "gemini_api_key":     settings.gemini_api_key,
+    })
+
+
+_load_ai_cfg()
+
+
+def _mask(key: str) -> str:
+    if not key:
+        return ""
+    return key[:4] + "…" + key[-4:] if len(key) > 8 else "****"
+
+
+def _active_key() -> str:
+    """Return the API key for the currently configured provider."""
+    prov = _ai_cfg.get("provider", "")
+    return _ai_cfg.get(f"{prov}_api_key", "")
+
+
+@app.get("/api/ai-config")
+async def get_ai_config():
+    """Return current AI provider configuration (API keys masked)."""
+    return {
+        "provider":            _ai_cfg.get("provider", ""),
+        "model":               _ai_cfg.get("model", ""),
+        "ai_analysis_enabled": _ai_cfg.get("enabled", False),
+        "openai_key_set":      bool(_ai_cfg.get("openai_api_key")),
+        "anthropic_key_set":   bool(_ai_cfg.get("anthropic_api_key")),
+        "gemini_key_set":      bool(_ai_cfg.get("gemini_api_key")),
+        "openai_key_preview":     _mask(_ai_cfg.get("openai_api_key", "")),
+        "anthropic_key_preview":  _mask(_ai_cfg.get("anthropic_api_key", "")),
+        "gemini_key_preview":     _mask(_ai_cfg.get("gemini_api_key", "")),
+    }
+
+
+@app.post("/api/ai-config/test")
+async def test_ai_config(request: Request):
+    """Send a minimal request to the AI provider to verify the API key."""
+    import aiohttp
+    payload  = await request.json()
+    provider = payload.get("provider", "").lower().strip()
+    api_key  = payload.get("api_key", "").strip()
+    model    = payload.get("model", "").strip()
+
+    if not provider:
+        return {"success": False, "message": "Provider is required"}
+    if not api_key:
+        return {"success": False, "message": "API key is required"}
+
+    try:
+        async with aiohttp.ClientSession() as session:
+
+            if provider == "openai":
+                model = model or "gpt-4o-mini"
+                async with session.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}",
+                             "Content-Type": "application/json"},
+                    json={"model": model,
+                          "messages": [{"role": "user", "content": "Hi"}],
+                          "max_tokens": 5},
+                    timeout=aiohttp.ClientTimeout(total=12),
+                ) as resp:
+                    data = await resp.json()
+                    if resp.status == 200:
+                        return {"success": True,
+                                "message": f"OpenAI OK — model: {data.get('model', model)}",
+                                "model": data.get("model", model)}
+                    return {"success": False,
+                            "message": data.get("error", {}).get("message", "Authentication failed")}
+
+            elif provider == "anthropic":
+                model = model or "claude-3-5-haiku-20241022"
+                async with session.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={"x-api-key": api_key,
+                             "anthropic-version": "2023-06-01",
+                             "Content-Type": "application/json"},
+                    json={"model": model, "max_tokens": 5,
+                          "messages": [{"role": "user", "content": "Hi"}]},
+                    timeout=aiohttp.ClientTimeout(total=12),
+                ) as resp:
+                    data = await resp.json()
+                    if resp.status == 200:
+                        return {"success": True,
+                                "message": f"Anthropic OK — model: {data.get('model', model)}",
+                                "model": data.get("model", model)}
+                    return {"success": False,
+                            "message": data.get("error", {}).get("message", "Authentication failed")}
+
+            elif provider == "gemini":
+                model = model or "gemini-1.5-flash"
+                url = (f"https://generativelanguage.googleapis.com/v1beta"
+                       f"/models/{model}:generateContent?key={api_key}")
+                async with session.post(
+                    url,
+                    json={"contents": [{"parts": [{"text": "Hi"}]}]},
+                    timeout=aiohttp.ClientTimeout(total=12),
+                ) as resp:
+                    data = await resp.json()
+                    if resp.status == 200:
+                        return {"success": True,
+                                "message": f"Gemini OK — model: {model}",
+                                "model": model}
+                    return {"success": False,
+                            "message": data.get("error", {}).get("message", "Authentication failed")}
+
+            return {"success": False, "message": f"Unknown provider: {provider}"}
+
+    except asyncio.TimeoutError:
+        return {"success": False, "message": "Connection timed out (>12 s) — check your network"}
+    except Exception as exc:  # noqa: BLE001
+        return {"success": False, "message": str(exc)}
+
+
+@app.post("/api/ai-config/save")
+async def save_ai_config(request: Request):
+    """Persist AI config to .env and update the in-memory runtime config."""
+    import re
+    payload  = await request.json()
+    provider = payload.get("provider", "").strip().lower()
+    api_key  = payload.get("api_key", "").strip()
+    model    = payload.get("model", "").strip()
+    enabled  = bool(payload.get("enabled", False))
+
+    if not provider:
+        return {"success": False, "message": "Provider is required"}
+
+    key_env_map = {
+        "openai":    "OPENAI_API_KEY",
+        "anthropic": "ANTHROPIC_API_KEY",
+        "gemini":    "GEMINI_API_KEY",
+    }
+    if provider not in key_env_map:
+        return {"success": False, "message": f"Unknown provider: {provider}"}
+
+    # Update runtime config immediately (no restart needed)
+    _ai_cfg["provider"] = provider
+    _ai_cfg["model"]    = model
+    _ai_cfg["enabled"]  = enabled
+    env_key_name = key_env_map[provider]
+    # Only update stored key if a real (non-masked) value was provided
+    if api_key and "…" not in api_key and len(api_key) > 8:
+        _ai_cfg[f"{provider}_api_key"] = api_key
+
+    # Push updated config into the LLM analyzer (live, no restart)
+    llm_analyzer.update_cfg(_ai_cfg)
+
+    # Persist to .env file
+    env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
+    lines: list[str] = []
+    if os.path.exists(env_path):
+        with open(env_path, "r", encoding="utf-8") as fh:
+            lines = fh.readlines()
+
+    def _set(lines: list[str], key: str, value: str) -> list[str]:
+        pat = re.compile(rf"^\s*{re.escape(key)}\s*=", re.IGNORECASE)
+        replaced = False
+        result = []
+        for ln in lines:
+            if pat.match(ln):
+                result.append(f"{key}={value}\n")
+                replaced = True
+            else:
+                result.append(ln)
+        if not replaced:
+            result.append(f"{key}={value}\n")
+        return result
+
+    lines = _set(lines, "AI_PROVIDER", provider)
+    lines = _set(lines, "AI_MODEL", model)
+    lines = _set(lines, "AI_ANALYSIS_ENABLED", str(enabled).lower())
+    if api_key and "…" not in api_key and len(api_key) > 8:
+        lines = _set(lines, env_key_name, api_key)
+
+    try:
+        with open(env_path, "w", encoding="utf-8") as fh:
+            fh.writelines(lines)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not write .env: {}", exc)
+        return {"success": False, "message": f"Failed to write .env: {exc}"}
+
+    label = {"openai": "OpenAI", "anthropic": "Anthropic (Claude)", "gemini": "Google Gemini"}
+    return {
+        "success": True,
+        "message": (f"{label[provider]} saved"
+                    + (f" — model: {model}" if model else "")
+                    + (" — AI analysis ENABLED" if enabled else " — AI analysis disabled")),
+    }
+
+
+async def _realtime_loop() -> None:
+    """Push metrics + enriched positions to all connected WS clients every 5 seconds."""
+    while True:
+        await asyncio.sleep(5)
+        if not state.connected_ws or not state.portfolio_manager:
+            continue
+        try:
+            metrics = await state.portfolio_manager.calculate_metrics()
+            await broadcast("metrics", metrics)
+
+            positions = dict(await state.portfolio_manager.get_open_positions())
+            if positions:
+                prices = await _fetch_current_prices(list(positions.keys()))
+                for sym, pos in positions.items():
+                    cp = prices.get(sym)
+                    if cp:
+                        qty = pos.get("quantity", 0)
+                        entry = pos.get("entry_price", 0)
+                        size = pos.get("position_size_usdt") or (qty * entry) or 1
+                        direction = pos.get("direction", "LONG")
+                        upnl = (cp - entry) * qty if direction == "LONG" else (entry - cp) * qty
+                        pos["current_price"] = round(cp, 6)
+                        pos["unrealized_pnl_usdt"] = round(upnl, 2)
+                        pos["unrealized_pnl_pct"] = round(upnl / size * 100, 2) if size else 0
+            await broadcast("positions", {"positions": positions})
+        except Exception as exc:
+            logger.warning("Realtime broadcast error: {}", exc)
+
+
+@app.on_event("startup")
+async def _on_startup() -> None:
+    llm_analyzer.update_cfg(_ai_cfg)   # sync initial AI config into analyzer
+    asyncio.create_task(_realtime_loop())
+
+
 @app.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket):
     await websocket.accept()
     state.connected_ws.append(websocket)
     logger.info("WS connected ({})", len(state.connected_ws))
 
-    # Push current state immediately so client doesn't wait up to 30s for first update
+    # Push current state immediately so client doesn't wait up to 5s for first update
     if state.portfolio_manager:
         try:
             metrics = await state.portfolio_manager.calculate_metrics()
             await websocket.send_text(json.dumps({
                 "type": "metrics", "data": metrics, "ts": datetime.utcnow().isoformat()
+            }))
+            positions = dict(await state.portfolio_manager.get_open_positions())
+            if positions:
+                prices = await _fetch_current_prices(list(positions.keys()))
+                for sym, pos in positions.items():
+                    cp = prices.get(sym)
+                    if cp:
+                        qty = pos.get("quantity", 0)
+                        entry = pos.get("entry_price", 0)
+                        size = pos.get("position_size_usdt") or (qty * entry) or 1
+                        direction = pos.get("direction", "LONG")
+                        upnl = (cp - entry) * qty if direction == "LONG" else (entry - cp) * qty
+                        pos["current_price"] = round(cp, 6)
+                        pos["unrealized_pnl_usdt"] = round(upnl, 2)
+                        pos["unrealized_pnl_pct"] = round(upnl / size * 100, 2) if size else 0
+            await websocket.send_text(json.dumps({
+                "type": "positions", "data": {"positions": positions}, "ts": datetime.utcnow().isoformat()
             }))
         except Exception:
             pass

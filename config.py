@@ -83,5 +83,13 @@ class Settings(BaseSettings):
     reddit_client_secret: str = ""
     reddit_user_agent: str = "crypto_scanner/1.0"
 
+    # AI LLM Integration (OpenAI / Anthropic / Gemini)
+    ai_provider: str = ""              # openai | anthropic | gemini
+    openai_api_key: str = ""
+    anthropic_api_key: str = ""
+    gemini_api_key: str = ""
+    ai_model: str = ""                 # e.g. gpt-4o, claude-3-5-sonnet-20241022, gemini-1.5-pro
+    ai_analysis_enabled: bool = False  # enable LLM-enhanced trade research
+
 
 settings = Settings()

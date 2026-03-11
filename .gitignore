@@ -51,3 +51,8 @@ htmlcov/
 
 # Auto-updater backups
 .backups/
+
+# VPS deploy output
+deploy_result.txt
+vps_log.txt
+vps_status.txt

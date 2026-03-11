@@ -159,6 +159,10 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
       Self Learning
     </a>
+    <a onclick="goto('aiconfig')" data-p="aiconfig">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
+      AI Integration
+    </a>
     <div class="ns">Portfolio</div>
     <a onclick="goto('trades')" data-p="trades">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
@@ -302,11 +306,11 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
     <div style="overflow-x:auto">
       <table class="tbl">
         <thead><tr>
-          <th>Symbol</th><th>Dir</th><th>Entry</th><th>SL</th><th>TP</th>
-          <th>Qty</th><th>Size (USDT)</th><th>Score</th><th>Exchange</th>
+          <th>Symbol</th><th>Dir</th><th>Entry</th><th>Current</th><th>Unreal. PnL</th>
+          <th>SL</th><th>TP</th><th>Qty</th><th>Size (USDT)</th><th>Score</th><th>Exchange</th>
         </tr></thead>
         <tbody id="ttb">
-          <tr><td colspan="9" style="text-align:center;color:var(--mut);padding:18px">No open positions</td></tr>
+          <tr><td colspan="11" style="text-align:center;color:var(--mut);padding:18px">No open positions</td></tr>
         </tbody>
       </table>
     </div>
@@ -360,6 +364,87 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
   </div>
 </div>
 
+<!-- AI INTEGRATION PAGE -->
+<div class="page" id="page-aiconfig">
+  <div class="tc">
+    <!-- LEFT: Configuration Form -->
+    <div class="card">
+      <div class="ch"><span class="ct2">AI Provider Configuration</span></div>
+
+      <div style="margin-bottom:13px">
+        <label style="font-size:.72rem;color:var(--mut);display:block;margin-bottom:5px">AI Provider</label>
+        <select id="aiProv" onchange="onProvChg()" style="width:100%;background:var(--bg3);color:var(--txt);border:1px solid var(--border);padding:8px 10px;border-radius:7px;font-size:.83rem;outline:none">
+          <option value="">-- Select Provider --</option>
+          <option value="openai">OpenAI (GPT-4o / GPT-4)</option>
+          <option value="anthropic">Anthropic (Claude 3.5 / 3)</option>
+          <option value="gemini">Google Gemini 1.5 / 2.0</option>
+        </select>
+      </div>
+
+      <div style="margin-bottom:13px">
+        <label style="font-size:.72rem;color:var(--mut);display:block;margin-bottom:5px">API Key</label>
+        <div style="position:relative">
+          <input id="aiKey" type="password" placeholder="Paste API key here..."
+            style="width:100%;background:var(--bg3);color:var(--txt);border:1px solid var(--border);padding:8px 38px 8px 10px;border-radius:7px;font-size:.83rem;outline:none;font-family:monospace"/>
+          <span onclick="tgKV()" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);cursor:pointer;color:var(--mut);font-size:.78rem;user-select:none" id="kvIco">👁</span>
+        </div>
+      </div>
+
+      <div style="margin-bottom:16px">
+        <label style="font-size:.72rem;color:var(--mut);display:block;margin-bottom:5px">Model</label>
+        <select id="aiModel" style="width:100%;background:var(--bg3);color:var(--txt);border:1px solid var(--border);padding:8px 10px;border-radius:7px;font-size:.83rem;outline:none">
+          <option value="">-- Select provider first --</option>
+        </select>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:18px;padding:11px 13px;background:var(--bg3);border-radius:8px;border:1px solid var(--border)">
+        <input type="checkbox" id="aiEnabled" style="width:16px;height:16px;cursor:pointer;accent-color:var(--accent);flex-shrink:0"/>
+        <div>
+          <div style="font-size:.82rem;font-weight:600">Enable AI Analysis</div>
+          <div style="font-size:.68rem;color:var(--mut);margin-top:2px">Use LLM to enhance trade research, signal reasoning &amp; risk assessment</div>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:8px;margin-bottom:10px">
+        <button class="btn bo" id="testBtn" onclick="testAI()" style="flex:1;padding:9px">🧪 Test API</button>
+        <button class="btn bp" id="saveBtn" onclick="saveAI()" style="flex:1;padding:9px">💾 Save Config</button>
+      </div>
+
+      <div id="aiTestResult" style="display:none;padding:10px 13px;border-radius:7px;font-size:.8rem;line-height:1.5"></div>
+    </div>
+
+    <!-- RIGHT: Status + Info -->
+    <div style="display:flex;flex-direction:column;gap:13px">
+      <div class="card">
+        <div class="ch"><span class="ct2">Current Status</span></div>
+        <div id="aiStatus"><div style="color:var(--mut);font-size:.78rem;padding:4px">Loading...</div></div>
+      </div>
+
+      <div class="card">
+        <div class="ch"><span class="ct2">How AI Integration Works</span></div>
+        <div style="font-size:.76rem;color:var(--mut);line-height:1.7">
+          <div style="padding:6px 0;border-bottom:1px solid var(--border);display:flex;gap:8px"><span>📊</span><div><strong style="color:var(--txt)">Market Analysis</strong><br>Summarises chart patterns &amp; context before each trade</div></div>
+          <div style="padding:6px 0;border-bottom:1px solid var(--border);display:flex;gap:8px"><span>🔍</span><div><strong style="color:var(--txt)">Signal Reasoning</strong><br>Explains why a signal score was generated</div></div>
+          <div style="padding:6px 0;border-bottom:1px solid var(--border);display:flex;gap:8px"><span>⚠️</span><div><strong style="color:var(--txt)">Risk Assessment</strong><br>Evaluates macro sentiment &amp; potential risks</div></div>
+          <div style="padding:6px 0;display:flex;gap:8px"><span>📝</span><div><strong style="color:var(--txt)">Trade Journal</strong><br>Auto-generates notes attached to every trade</div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="ch"><span class="ct2">Supported Models</span></div>
+        <table class="tbl">
+          <thead><tr><th>Provider</th><th>Recommended</th><th>Speed</th></tr></thead>
+          <tbody>
+            <tr><td>OpenAI</td><td style="color:var(--accent)">GPT-4o</td><td class="neu">Fast</td></tr>
+            <tr><td>Anthropic</td><td style="color:var(--accent)">Claude 3.5 Sonnet</td><td class="neu">Fast</td></tr>
+            <tr><td>Gemini</td><td style="color:var(--accent)">Gemini 1.5 Pro</td><td class="neu">Fast</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
 </div><!-- #ct -->
 </div><!-- #mn -->
 </div><!-- #app -->
@@ -376,8 +461,8 @@ async function ap(p,m,b){
 }
 
 var PT={dashboard:'Dashboard',signals:'Live Signals',heatmap:'Market Heatmap',
-        rankings:'AI Rankings',learning:'Self Learning',trades:'Open Trades',
-        performance:'Performance',system:'System & Update'};
+        rankings:'AI Rankings',learning:'Self Learning',aiconfig:'AI Integration',
+        trades:'Open Trades',performance:'Performance',system:'System & Update'};
 
 function goto(pg){
   document.querySelectorAll('.page').forEach(function(p){p.classList.remove('active');});
@@ -394,6 +479,7 @@ async function lP(pg){
   else if(pg==='heatmap')await lHM();
   else if(pg==='rankings')await lRk();
   else if(pg==='learning')await lLn();
+  else if(pg==='aiconfig')await lAI();
   else if(pg==='trades')await lTr();
   else if(pg==='performance')await lPf();
   else if(pg==='system')await lSy();
@@ -420,6 +506,10 @@ function cwS(){
     lgC(d.type+': '+JSON.stringify(d.data||'').slice(0,70));
     if(d.type==='signal')lSD();
     if(d.type==='metrics'){uSt(d.data);bPC(d.data);bWL(d.data);}
+    if(d.type==='positions'){
+      var pg=document.querySelector('.page.active');
+      if(pg&&pg.id==='page-trades')rPos(d.data.positions||{});
+    }
     if(d.type==='system_update')toast(d.data.message||'Updated',d.data.success?'ok':'err');
   };
   ws.onclose=function(){
@@ -565,16 +655,35 @@ function bLC(coins){
   lC=new Chart(ctx,{type:'bar',data:{labels:lbs,datasets:[{label:'Win %',data:dt,backgroundColor:dt.map(function(v){return v>=60?'rgba(16,185,129,.75)':v>=50?'rgba(251,191,36,.75)':'rgba(255,68,102,.75)';}),borderRadius:4}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{color:'rgba(255,255,255,.04)'},ticks:{color:'#64748b'}},y:{grid:{color:'rgba(255,255,255,.04)'},ticks:{color:'#64748b'},min:0,max:100}}}});
 }
 
-async function lTr(){
-  var d=await ap('/api/portfolio');var pos=d.positions||{},exp=d.risk_exposure||{};
+function rPos(pos, exp) {
+  var tb=document.getElementById('ttb'); if(!tb)return;
   var bdg=document.getElementById('expb');
-  if(bdg)bdg.textContent='Exposure: '+(exp.exposure_pct||0).toFixed(1)+'% | '+(exp.open_trades||0)+'/5';
-  var tb=document.getElementById('ttb');
-  var ents=Object.entries(pos);
+  if(bdg&&exp)bdg.textContent='Exposure: '+(exp.exposure_pct||0).toFixed(1)+'% | '+(exp.open_trades||0)+'/5';
+  var ents=Object.entries(pos||{});
   tb.innerHTML=ents.length?ents.map(function(e){
     var s=e[0],p=e[1];
-    return '<tr><td class="tbls">'+s+'</td><td><span class="sdir s'+((p.direction||'').toLowerCase())+'">'+p.direction+'</span></td><td>'+(p.entry_price||0).toFixed(4)+'</td><td class="tn">'+(p.stop_loss||0).toFixed(4)+'</td><td class="tp">'+(p.take_profit||0).toFixed(4)+'</td><td>'+(p.quantity||'--')+'</td><td>$'+(p.position_size_usdt||0).toFixed(2)+'</td><td>'+(p.signal_score||'--')+'</td><td>'+(p.exchange||'--')+'</td></tr>';
-  }).join(''):'<tr><td colspan="9" style="text-align:center;color:var(--mut);padding:18px">No open positions</td></tr>';
+    var dir=(p.direction||'LONG').toLowerCase();
+    var cp=p.current_price!=null?'$'+Number(p.current_price).toFixed(4):'--';
+    var upnl=p.unrealized_pnl_usdt,upct=p.unrealized_pnl_pct;
+    var pnlStr=upnl!=null?(upnl>=0?'+$':'-$')+Math.abs(upnl).toFixed(2)+' ('+(upct>=0?'+':'')+upct.toFixed(1)+'%)':'--';
+    var pnlCls=upnl!=null?(upnl>=0?'tp':'tn'):'';
+    return '<tr><td class="tbls">'+s+'</td>'
+      +'<td><span class="sdir s'+dir+'">'+p.direction+'</span></td>'
+      +'<td>'+(p.entry_price||0).toFixed(4)+'</td>'
+      +'<td style="font-weight:600">'+cp+'</td>'
+      +'<td class="'+pnlCls+'" style="font-weight:700">'+pnlStr+'</td>'
+      +'<td class="tn">'+(p.stop_loss||0).toFixed(4)+'</td>'
+      +'<td class="tp">'+(p.take_profit||0).toFixed(4)+'</td>'
+      +'<td>'+(p.quantity||'--')+'</td>'
+      +'<td>$'+(p.position_size_usdt||0).toFixed(2)+'</td>'
+      +'<td>'+(p.signal_score||'--')+'</td>'
+      +'<td>'+(p.exchange||'--')+'</td></tr>';
+  }).join(''):'<tr><td colspan="11" style="text-align:center;color:var(--mut);padding:18px">No open positions</td></tr>';
+}
+
+async function lTr(){
+  var d=await ap('/api/portfolio');
+  rPos(d.positions||{}, d.risk_exposure||{});
 }
 
 async function lPf(){
@@ -658,6 +767,133 @@ async function rAll(){
 
 function rCharts(){ap('/api/metrics').then(function(m){bPC(m);bWL(m);});}
 
+// ── AI Integration ──────────────────────────────────────────────────────────
+var _aiModels={
+  openai:[
+    {v:'gpt-4o',         l:'GPT-4o  ★ Recommended'},
+    {v:'gpt-4o-mini',    l:'GPT-4o Mini  (Fast / Low cost)'},
+    {v:'gpt-4-turbo',    l:'GPT-4 Turbo'},
+    {v:'gpt-3.5-turbo',  l:'GPT-3.5 Turbo  (Budget)'}
+  ],
+  anthropic:[
+    {v:'claude-3-5-sonnet-20241022', l:'Claude 3.5 Sonnet  ★ Recommended'},
+    {v:'claude-3-5-haiku-20241022',  l:'Claude 3.5 Haiku  (Fast)'},
+    {v:'claude-3-opus-20240229',     l:'Claude 3 Opus  (Powerful)'}
+  ],
+  gemini:[
+    {v:'gemini-1.5-pro',   l:'Gemini 1.5 Pro  ★ Recommended'},
+    {v:'gemini-1.5-flash', l:'Gemini 1.5 Flash  (Fast)'},
+    {v:'gemini-2.0-flash', l:'Gemini 2.0 Flash  (Latest)'}
+  ]
+};
+
+function onProvChg(){
+  var prov=document.getElementById('aiProv').value;
+  var sel=document.getElementById('aiModel');
+  var models=_aiModels[prov]||[];
+  sel.innerHTML=models.length
+    ?models.map(function(m,i){return '<option value="'+m.v+'"'+(i===0?' selected':'')+'>'+m.l+'</option>';}).join('')
+    :'<option value="">-- Select provider first --</option>';
+}
+
+function tgKV(){
+  var inp=document.getElementById('aiKey');
+  var ico=document.getElementById('kvIco');
+  if(inp.type==='password'){inp.type='text';ico.textContent='🙈';}
+  else{inp.type='password';ico.textContent='👁';}
+}
+
+async function lAI(){
+  var d=await ap('/api/ai-config');
+  // Populate form
+  var pEl=document.getElementById('aiProv');
+  if(pEl&&d.provider){pEl.value=d.provider;onProvChg();}
+  var mEl=document.getElementById('aiModel');
+  if(mEl&&d.model){
+    for(var i=0;i<mEl.options.length;i++){if(mEl.options[i].value===d.model){mEl.selectedIndex=i;break;}}
+  }
+  var enEl=document.getElementById('aiEnabled');
+  if(enEl)enEl.checked=!!d.ai_analysis_enabled;
+
+  // Status card
+  var el=document.getElementById('aiStatus');if(!el)return;
+  var provLabel={openai:'OpenAI',anthropic:'Anthropic (Claude)',gemini:'Google Gemini'};
+  var provTxt=provLabel[d.provider]
+    ?'<span style="color:var(--accent);font-weight:700">'+provLabel[d.provider]+'</span>'
+    :'<span style="color:var(--mut)">Not configured</span>';
+  var keys=[
+    {label:'OpenAI Key',    set:d.openai_key_set,    preview:d.openai_key_preview},
+    {label:'Anthropic Key', set:d.anthropic_key_set, preview:d.anthropic_key_preview},
+    {label:'Gemini Key',    set:d.gemini_key_set,    preview:d.gemini_key_preview}
+  ];
+  el.innerHTML='<table class="tbl">'
+    +'<tr><td class="neu">Active Provider</td><td>'+provTxt+'</td></tr>'
+    +'<tr><td class="neu">Model</td><td>'+(d.model||'<span style="color:var(--mut)">Default</span>')+'</td></tr>'
+    +'<tr><td class="neu">AI Analysis</td><td>'+(d.ai_analysis_enabled
+      ?'<span class="pos">● Enabled</span>'
+      :'<span style="color:var(--mut)">○ Disabled</span>')+'</td></tr>'
+    +keys.map(function(k){
+      return '<tr><td class="neu">'+k.label+'</td><td>'+(k.set
+        ?'<span class="pos">✓ Saved</span> <span style="color:var(--mut);font-family:monospace;font-size:.68rem">'+k.preview+'</span>'
+        :'<span style="color:var(--mut)">Not set</span>')+'</td></tr>';
+    }).join('')
+    +'</table>';
+}
+
+async function testAI(){
+  var prov=document.getElementById('aiProv').value;
+  var key=document.getElementById('aiKey').value.trim();
+  var model=document.getElementById('aiModel').value;
+  var res=document.getElementById('aiTestResult');
+  var btn=document.getElementById('testBtn');
+  if(!prov){toast('Select a provider first','err');return;}
+  if(!key){toast('Enter the API key first','err');return;}
+
+  btn.disabled=true;btn.textContent='Testing...';
+  res.style.display='none';
+
+  var d=await ap('/api/ai-config/test','POST',{provider:prov,api_key:key,model:model});
+
+  btn.disabled=false;btn.textContent='🧪 Test API';
+  res.style.display='block';
+  if(d.success){
+    res.style.cssText='display:block;padding:10px 13px;border-radius:7px;font-size:.8rem;background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.3)';
+    res.innerHTML='<span style="color:var(--grn);font-weight:700">✓ Connection successful</span><br><span style="color:var(--mut)">'+d.message+'</span>';
+    toast(d.message,'ok');
+  } else {
+    res.style.cssText='display:block;padding:10px 13px;border-radius:7px;font-size:.8rem;background:rgba(255,68,102,.1);border:1px solid rgba(255,68,102,.3)';
+    res.innerHTML='<span style="color:var(--red);font-weight:700">✗ Test failed</span><br><span style="color:var(--mut)">'+d.message+'</span>';
+    toast('Test failed: '+d.message,'err');
+  }
+}
+
+async function saveAI(){
+  var prov=document.getElementById('aiProv').value;
+  var key=document.getElementById('aiKey').value.trim();
+  var model=document.getElementById('aiModel').value;
+  var enabled=document.getElementById('aiEnabled').checked;
+  var btn=document.getElementById('saveBtn');
+  var res=document.getElementById('aiTestResult');
+  if(!prov){toast('Select a provider first','err');return;}
+
+  btn.disabled=true;btn.textContent='Saving...';
+  var d=await ap('/api/ai-config/save','POST',{provider:prov,api_key:key,model:model,enabled:enabled});
+  btn.disabled=false;btn.textContent='💾 Save Config';
+
+  res.style.display='block';
+  if(d.success){
+    res.style.cssText='display:block;padding:10px 13px;border-radius:7px;font-size:.8rem;background:rgba(59,130,246,.1);border:1px solid rgba(59,130,246,.3)';
+    res.innerHTML='<span style="color:var(--a2);font-weight:700">✓ Saved</span><br><span style="color:var(--mut)">'+d.message+'</span>';
+    document.getElementById('aiKey').value='';
+    toast(d.message,'ok');
+    await lAI();
+  } else {
+    res.style.cssText='display:block;padding:10px 13px;border-radius:7px;font-size:.8rem;background:rgba(255,68,102,.1);border:1px solid rgba(255,68,102,.3)';
+    res.innerHTML='<span style="color:var(--red);font-weight:700">✗ Save failed</span><br><span style="color:var(--mut)">'+d.message+'</span>';
+    toast('Save failed: '+d.message,'err');
+  }
+}
+
 (async function(){
   cwS();
   await lD();
@@ -668,7 +904,7 @@ function rCharts(){ap('/api/metrics').then(function(m){bPC(m);bWL(m);});}
     if(id==='signals')await lSD();
     if(id==='heatmap')await lHM();
     if(id==='trades')await lTr();
-  },15000);
+  },10000);
 })();
 </script>
 </body>

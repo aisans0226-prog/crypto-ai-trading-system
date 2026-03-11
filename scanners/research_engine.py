@@ -13,7 +13,7 @@ Final score is normalised to 0–10. Passes when score >= config threshold
 AND at least 2/3 timeframes agree with the trade direction.
 """
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import numpy as np
@@ -21,17 +21,19 @@ from loguru import logger
 
 from config import settings
 from data_engine.coin_database import CoinDatabase
+import ai_engine.llm_analyzer as llm_analyzer
 
 
 @dataclass
 class ResearchResult:
-    symbol:       str
-    passed:       bool
-    confidence:   float          # 0.0 – 1.0
-    score:        float          # normalised 0–10
-    mtf_alignment: float         # fraction of TFs agreeing (0–1)
-    reasons:      List[str] = field(default_factory=list)
+    symbol:         str
+    passed:         bool
+    confidence:     float           # 0.0 – 1.0
+    score:          float           # normalised 0–10
+    mtf_alignment:  float           # fraction of TFs agreeing (0–1)
+    reasons:        List[str] = field(default_factory=list)
     failed_reasons: List[str] = field(default_factory=list)
+    ai_analysis:    Optional[object] = None   # LLMAnalysis | None
 
 
 class ResearchEngine:
@@ -89,6 +91,37 @@ class ResearchEngine:
             and mtf_alignment >= settings.research_min_mtf_alignment
         )
 
+        # ── LLM analysis (only active when ai_analysis_enabled=True) ─────────
+        ai_result = None
+        if llm_analyzer.is_enabled():
+            try:
+                tf_tags = self._parse_tf_tags(reasons)
+                ai_result = await llm_analyzer.LLMAnalyzer().analyze(
+                    symbol=symbol,
+                    direction=direction,
+                    signal_score=initial_score,
+                    research_score=score,
+                    mtf_alignment=mtf_alignment,
+                    tf_tags=tf_tags,
+                )
+                if ai_result.enabled:
+                    # Apply score adjustment (clamped to 0–10)
+                    score = max(0.0, min(10.0, score + ai_result.score_delta))
+                    tag = f"ai:{ai_result.recommendation}(δ{ai_result.score_delta:+.1f})"
+                    if ai_result.recommendation == "avoid":
+                        # LLM strongly disagrees — override to failed
+                        passed = False
+                        failed.append(f"ai:avoid — {ai_result.reasoning[:100]}")
+                    else:
+                        reasons.append(tag)
+                        # Re-evaluate pass with adjusted score
+                        passed = (
+                            score >= settings.research_min_score
+                            and mtf_alignment >= settings.research_min_mtf_alignment
+                        )
+            except Exception as exc:
+                logger.debug("LLM research integration error: {}", exc)
+
         return ResearchResult(
             symbol=symbol,
             passed=passed,
@@ -97,6 +130,7 @@ class ResearchEngine:
             mtf_alignment=round(mtf_alignment, 2),
             reasons=reasons,
             failed_reasons=failed,
+            ai_analysis=ai_result,
         )
 
     # ── Single-timeframe analysis ─────────────────────────────────────────
@@ -179,3 +213,15 @@ class ResearchEngine:
         agrees = partial and not (rsi_v > 72 or rsi_v < 28)
 
         return score, agrees, ok, bad
+
+    # ── Helpers ──────────────────────────────────────────────────────────────
+    @staticmethod
+    def _parse_tf_tags(reasons: List[str]) -> Dict[str, List[str]]:
+        """Extract per-timeframe tag lists from the flat reasons list."""
+        tags: Dict[str, List[str]] = {"15m": [], "1h": [], "4h": []}
+        for r in reasons:
+            for tf in tags:
+                if r.startswith(tf + ":"):
+                    tags[tf].append(r[len(tf) + 1:])
+                    break
+        return tags
