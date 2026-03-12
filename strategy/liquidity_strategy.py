@@ -57,7 +57,7 @@ class LiquidityStrategy:
                         symbol=symbol, direction="LONG",
                         entry_price=c, stop_loss=round(stop, 6),
                         take_profit=round(tp, 6),
-                        leverage=min(settings.max_leverage, 3),
+                        leverage=settings.max_leverage,
                         risk_reward=round(rr, 2),
                     )
 
@@ -71,7 +71,7 @@ class LiquidityStrategy:
                         symbol=symbol, direction="SHORT",
                         entry_price=c, stop_loss=round(stop, 6),
                         take_profit=round(tp, 6),
-                        leverage=min(settings.max_leverage, 3),
+                        leverage=settings.max_leverage,
                         risk_reward=round(rr, 2),
                     )
 
@@ -79,3 +79,30 @@ class LiquidityStrategy:
             logger.debug("LiquidityStrategy error ({}): {}", symbol, exc)
 
         return None
+
+    def regime_fit(self, df: pd.DataFrame) -> float:
+        """Higher when recent candles show large wicks (potential stop-hunts)."""
+        try:
+            open_  = df["open"]
+            close  = df["close"]
+            high   = df["high"]
+            low    = df["low"]
+
+            ratios = []
+            for i in range(-10, 0):
+                o  = open_.iloc[i];  cl = close.iloc[i]
+                h  = high.iloc[i];   l  = low.iloc[i]
+                total = h - l
+                if total < 1e-10:
+                    continue
+                wick = (min(o, cl) - l) + (h - max(o, cl))
+                ratios.append(wick / total)
+
+            if not ratios:
+                return 0.5
+
+            avg_wick = sum(ratios) / len(ratios)
+            # Scale: avg_wick at WICK_RATIO_THRESHOLD → 1.0
+            return round(min(avg_wick / self.WICK_RATIO_THRESHOLD, 1.0), 4)
+        except Exception:
+            return 0.5

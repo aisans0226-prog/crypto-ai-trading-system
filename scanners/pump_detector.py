@@ -50,9 +50,10 @@ class PumpDetector:
                 signals.append("strong_price_move")
 
             # ── RSI not overbought ────────────────────────────────────────
+            # Allow oversold entries (RSI < 30 is a valid reversal buy setup)
             rsi_series = ta.momentum.RSIIndicator(close=close, window=14).rsi()
             rsi = rsi_series.iloc[-1]
-            if 30 <= rsi <= 70:
+            if rsi <= 75:
                 score += 1
                 signals.append("rsi_healthy")
 
@@ -63,11 +64,17 @@ class PumpDetector:
                 signals.append("above_ema20")
 
             # ── Open interest increasing (real OI delta check) ────────────
+            # Use -1 as sentinel to distinguish "never seen" from "seen with OI=0"
             try:
                 oi_now = await self._engine.get_open_interest_binance(symbol)
-                oi_prev = self._oi_cache.get(symbol, 0)
+                oi_prev = self._oi_cache.get(symbol, -1)
                 self._oi_cache[symbol] = oi_now
-                if oi_prev > 0 and oi_now > oi_prev:
+                if oi_prev < 0:
+                    # First visit — award point if coin has active open interest
+                    if oi_now > 0:
+                        score += 1
+                        signals.append("oi_active")
+                elif oi_prev > 0 and oi_now > oi_prev:
                     oi_delta_pct = (oi_now - oi_prev) / oi_prev * 100
                     if oi_delta_pct >= 0.5:
                         score += 1

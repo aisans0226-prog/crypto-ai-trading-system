@@ -113,20 +113,65 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
 #logc{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:9px;font-family:monospace;font-size:.69rem;height:110px;overflow-y:auto;color:var(--grn)}
 /* overlay */
 #ov{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:99}
-/* mobile */
+/* ── Bottom Navigation Bar ──────────────────────────────────────── */
+#bnav{display:none;position:fixed;bottom:0;left:0;right:0;height:58px;background:var(--bg2);border-top:1px solid var(--border);z-index:200;grid-template-columns:repeat(5,1fr);align-items:stretch}
+#bnav a{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;color:var(--mut);text-decoration:none;cursor:pointer;padding:5px 2px;transition:.15s;border-top:2px solid transparent;font-size:.59rem;font-weight:600;-webkit-tap-highlight-color:transparent;user-select:none}
+#bnav a.ac{color:var(--accent);border-top-color:var(--accent)}
+#bnav a svg{width:20px;height:20px}
+/* ── More Drawer ─────────────────────────────────────────────────── */
+#mov{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:300}
+#mov.show{display:block}
+#mdr{position:fixed;bottom:0;left:0;right:0;background:var(--bg2);border-top:1px solid var(--border);border-radius:18px 18px 0 0;z-index:310;transform:translateY(100%);transition:transform .28s cubic-bezier(.4,0,.2,1);padding-bottom:env(safe-area-inset-bottom,0)}
+#mdr.open{transform:none}
+.mdrh{width:36px;height:4px;background:var(--border);border-radius:2px;margin:10px auto 4px}
+.mdrs{font-size:.62rem;color:var(--mut);text-transform:uppercase;letter-spacing:.08em;padding:10px 20px 2px}
+.mdri{display:flex;align-items:center;gap:14px;padding:12px 20px;color:var(--mut);cursor:pointer;font-size:.88rem;-webkit-tap-highlight-color:transparent;transition:background .15s}
+.mdri:active{background:var(--bg3)}
+.mdri.ac{color:var(--accent)}
+.mdri svg{width:18px;height:18px;flex-shrink:0;color:inherit}
+/* ── Mobile Trade Cards ──────────────────────────────────────────── */
+#mob-hide-tbl{}
+#mob-tc{display:none}
+.mtc{background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:13px;margin-bottom:10px}
+.mtc-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.mtc-sym{font-weight:700;font-size:.95rem}
+.mtc-pnl{font-size:.88rem;font-weight:700}
+.mtc-g{display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px}
+.mtc-c{display:flex;flex-direction:column;gap:2px;padding:6px 8px;background:var(--card);border-radius:7px}
+.mtc-l{font-size:.58rem;color:var(--mut);text-transform:uppercase;letter-spacing:.04em}
+.mtc-v{font-size:.78rem;font-weight:600}
+/* ── Mobile media queries ────────────────────────────────────────── */
 @media(max-width:768px){
   #sb{transform:translateX(-100%)}
   #sb.open{transform:none}
   #mn{margin-left:0}
-  #mbtn{display:block}
+  #mbtn{display:none !important}
   #ov.show{display:block}
+  #bnav{display:grid}
+  #ct{padding:14px 14px 76px}
   .cg{grid-template-columns:1fr}
   .tc{grid-template-columns:1fr}
   .sg{grid-template-columns:repeat(2,1fr)}
-  #hm{grid-template-columns:repeat(auto-fill,minmax(68px,1fr))}
+  #hm{grid-template-columns:repeat(auto-fill,minmax(72px,1fr))}
   .uc{flex-direction:column;align-items:flex-start;gap:7px}
+  header{padding:0 14px}
+  .hr2 .btn.bo{display:none}
+  #str-grid{grid-template-columns:1fr !important}
+  #mob-hide-tbl{display:none}
+  #mob-tc{display:block}
+  .cw{height:185px}
+  .cws{height:155px}
+  .si{padding:11px 0}
+  .ss{min-width:34px;height:34px}
+  .sc{padding:13px 12px}
+  .sv{font-size:1.35rem}
+  #logc{height:140px}
 }
-@media(max-width:400px){.sg{grid-template-columns:1fr}#ct{padding:10px}}
+@media(max-width:400px){
+  .sg{grid-template-columns:1fr}
+  #ct{padding:10px 10px 76px}
+  .sv{font-size:1.2rem}
+}
 </style>
 </head>
 <body>
@@ -162,6 +207,10 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
     <a onclick="goto('aiconfig')" data-p="aiconfig">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
       AI Integration
+    </a>
+    <a onclick="goto('strategy')" data-p="strategy">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      Strategy Discovery
     </a>
     <div class="ns">Portfolio</div>
     <a onclick="goto('trades')" data-p="trades">
@@ -298,12 +347,32 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
 
 <!-- TRADES PAGE -->
 <div class="page" id="page-trades">
+  <!-- Pending LIMIT Entry Orders -->
+  <div class="card fw" id="pending-card" style="display:none">
+    <div class="ch">
+      <span class="ct2">⏳ Pending LIMIT Orders</span>
+      <span id="pending-count" class="sbg" style="font-size:.7rem">0 orders</span>
+    </div>
+    <div style="overflow-x:auto">
+      <table class="tbl">
+        <thead><tr>
+          <th>Symbol</th><th>Dir</th><th>Limit Price</th><th>SL</th><th>TP</th>
+          <th>Qty</th><th>Retry</th><th>Remaining</th><th>Status</th>
+        </tr></thead>
+        <tbody id="pending-tb">
+          <tr><td colspan="9" style="text-align:center;color:var(--mut);padding:18px">No pending orders</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
   <div class="card fw">
     <div class="ch">
       <span class="ct2">Open Positions</span>
       <span id="expb" class="sbg" style="font-size:.7rem">Exposure: --</span>
     </div>
-    <div style="overflow-x:auto">
+    <!-- Desktop table -->
+    <div id="mob-hide-tbl" style="overflow-x:auto">
       <table class="tbl">
         <thead><tr>
           <th>Symbol</th><th>Dir</th><th>Entry</th><th>Current</th><th>Unreal. PnL</th>
@@ -314,6 +383,8 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
         </tbody>
       </table>
     </div>
+    <!-- Mobile cards -->
+    <div id="mob-tc"></div>
   </div>
 </div>
 
@@ -445,9 +516,100 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
   </div>
 </div>
 
+<!-- STRATEGY DISCOVERY PAGE -->
+<div class="page" id="page-strategy">
+  <div class="card" style="margin-bottom:13px">
+    <div class="ch">
+      <span class="ct2">Auto Strategy Discovery</span>
+      <span id="str-best-badge" style="display:none;padding:3px 10px;border-radius:20px;font-size:.69rem;font-weight:700;background:rgba(0,212,170,.15);color:var(--accent);border:1px solid var(--accent)"></span>
+    </div>
+    <div style="font-size:.75rem;color:var(--mut);margin-bottom:14px">
+      Bot evaluates all 6 strategies on every trade. Fitness score = regime fit × weight + historical win-rate × weight + recent performance × weight.
+      Weights shift automatically from regime-heavy → stats-heavy as data accumulates. Best strategy is auto-selected per trade.
+    </div>
+    <div id="str-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px">
+      <div style="color:var(--mut);font-size:.78rem;padding:12px">Loading strategy stats...</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="ch"><span class="ct2">Strategy Definitions</span></div>
+    <table class="tbl">
+      <thead><tr><th>Strategy</th><th>Regime Fit Signal</th><th>Entry Condition</th><th>Direction</th></tr></thead>
+      <tbody>
+        <tr><td class="tbls">TREND_FOLLOW</td><td>ADX &gt; 25 (strong trend)</td><td>EMA9 &gt; EMA20 &gt; EMA50, RSI 45–70, MACD rising</td><td>LONG / SHORT</td></tr>
+        <tr><td class="tbls">BREAKOUT</td><td>Price near resistance + volume spike</td><td>Close above/below 48-candle high/low with 1.5× volume</td><td>LONG / SHORT</td></tr>
+        <tr><td class="tbls">LIQUIDITY_SWEEP</td><td>Large wicks (stop-hunt zones)</td><td>Wick &gt; 60% candle range, price reverses</td><td>LONG / SHORT</td></tr>
+        <tr><td class="tbls">MOMENTUM</td><td>ROC + volume surge + ADX</td><td>3 consecutive bull candles, volume ≥ 1.2×, RSI 55–78</td><td>LONG only</td></tr>
+        <tr><td class="tbls">MEAN_REVERSION</td><td>RSI extreme + BB wide</td><td>RSI &lt;32/&gt;68, price at BB band, reversal candle</td><td>LONG / SHORT</td></tr>
+        <tr><td class="tbls">SCALP_BB</td><td>BB squeeze (low volatility)</td><td>BB width &lt; 25th-pct, breakout candle + 1.3× volume</td><td>LONG / SHORT</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
 </div><!-- #ct -->
 </div><!-- #mn -->
 </div><!-- #app -->
+
+<!-- ═══ Bottom Navigation (mobile) ═══ -->
+<nav id="bnav">
+  <a onclick="goto('dashboard')" data-bp="dashboard" class="ac">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+    <span>Home</span>
+  </a>
+  <a onclick="goto('signals')" data-bp="signals">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+    <span>Signals</span>
+  </a>
+  <a onclick="goto('trades')" data-bp="trades">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+    <span>Trades</span>
+  </a>
+  <a onclick="goto('rankings')" data-bp="rankings">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
+    <span>Rankings</span>
+  </a>
+  <a id="bnav-more" onclick="tMDr()">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="12" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><circle cx="19" cy="12" r="1.5" fill="currentColor"/></svg>
+    <span>More</span>
+  </a>
+</nav>
+
+<!-- ═══ More Drawer overlay ═══ -->
+<div id="mov" onclick="tMDr()"></div>
+
+<!-- ═══ More Drawer ═══ -->
+<div id="mdr">
+  <div class="mdrh"></div>
+  <div class="mdrs">Market</div>
+  <div class="mdri" data-mdr="heatmap" onclick="goto('heatmap');tMDr()">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z"/></svg>
+    Heatmap
+  </div>
+  <div class="mdri" data-mdr="performance" onclick="goto('performance');tMDr()">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+    Performance
+  </div>
+  <div class="mdrs">AI Engine</div>
+  <div class="mdri" data-mdr="learning" onclick="goto('learning');tMDr()">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
+    Self Learning
+  </div>
+  <div class="mdri" data-mdr="aiconfig" onclick="goto('aiconfig');tMDr()">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
+    AI Integration
+  </div>
+  <div class="mdri" data-mdr="strategy" onclick="goto('strategy');tMDr()">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+    Strategy Discovery
+  </div>
+  <div class="mdrs">System</div>
+  <div class="mdri" data-mdr="system" onclick="goto('system');tMDr()">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 010 14.14M4.93 4.93a10 10 0 000 14.14"/></svg>
+    System &amp; Update
+  </div>
+</div>
 
 <script>
 var pC=null,wC=null,rkC=null,lC=null,cpC=null,prC=null;
@@ -462,6 +624,7 @@ async function ap(p,m,b){
 
 var PT={dashboard:'Dashboard',signals:'Live Signals',heatmap:'Market Heatmap',
         rankings:'AI Rankings',learning:'Self Learning',aiconfig:'AI Integration',
+        strategy:'Strategy Discovery',
         trades:'Open Trades',performance:'Performance',system:'System & Update'};
 
 function goto(pg){
@@ -470,7 +633,7 @@ function goto(pg){
   var el=document.getElementById('page-'+pg);if(el)el.classList.add('active');
   var lk=document.querySelector('nav a[data-p="'+pg+'"]');if(lk)lk.classList.add('active');
   document.getElementById('ptl').textContent=PT[pg]||pg;
-  cSB();lP(pg);
+  cSB();uBNav(pg);lP(pg);
 }
 
 async function lP(pg){
@@ -480,6 +643,7 @@ async function lP(pg){
   else if(pg==='rankings')await lRk();
   else if(pg==='learning')await lLn();
   else if(pg==='aiconfig')await lAI();
+  else if(pg==='strategy')await lStr();
   else if(pg==='trades')await lTr();
   else if(pg==='performance')await lPf();
   else if(pg==='system')await lSy();
@@ -487,6 +651,19 @@ async function lP(pg){
 
 function tSB(){document.getElementById('sb').classList.toggle('open');document.getElementById('ov').classList.toggle('show');}
 function cSB(){document.getElementById('sb').classList.remove('open');document.getElementById('ov').classList.remove('show');}
+
+function tMDr(){
+  document.getElementById('mdr').classList.toggle('open');
+  document.getElementById('mov').classList.toggle('show');
+}
+
+var _mdrPages=['heatmap','performance','learning','aiconfig','strategy','system'];
+function uBNav(pg){
+  document.querySelectorAll('#bnav a[data-bp]').forEach(function(a){a.classList.toggle('ac',a.dataset.bp===pg);});
+  var mb=document.getElementById('bnav-more');
+  if(mb)mb.classList.toggle('ac',_mdrPages.indexOf(pg)!==-1);
+  document.querySelectorAll('.mdri').forEach(function(el){el.classList.toggle('ac',el.dataset.mdr===pg);});
+}
 
 function toast(msg,tp){
   var el=document.createElement('div');el.className='ti '+(tp||'inf');el.textContent=msg;
@@ -510,6 +687,7 @@ function cwS(){
       var pg=document.querySelector('.page.active');
       if(pg&&pg.id==='page-trades')rPos(d.data.positions||{},d.data.exposure||null);
     }
+    if(d.type==='pending_orders') rPending(d.data.orders||[]);
     if(d.type==='system_update')toast(d.data.message||'Updated',d.data.success?'ok':'err');
   };
   ws.onclose=function(){
@@ -656,10 +834,51 @@ function bLC(coins){
 }
 
 function rPos(pos, exp) {
-  var tb=document.getElementById('ttb'); if(!tb)return;
+  var tb=document.getElementById('ttb');
+  var mct=document.getElementById('mob-tc');
   var bdg=document.getElementById('expb');
   if(bdg&&exp)bdg.textContent='Exposure: '+(exp.exposure_pct||0).toFixed(1)+'% | '+(exp.open_trades||0)+'/5';
   var ents=Object.entries(pos||{});
+
+  // ── Mobile: card layout ──
+  if(window.innerWidth<=768&&mct){
+    mct.innerHTML=ents.length?ents.map(function(e){
+      var s=e[0],p=e[1];
+      var dir=(p.direction||'LONG').toLowerCase();
+      var cp=p.current_price!=null?'$'+Number(p.current_price).toFixed(4):'--';
+      var upnl=p.unrealized_pnl_usdt,upct=p.unrealized_pnl_pct;
+      var pnlStr=upnl!=null?(upnl>=0?'+$':'-$')+Math.abs(upnl).toFixed(2)+' ('+(upct>=0?'+':'')+upct.toFixed(1)+'%)':'--';
+      var pnlCls=upnl!=null?(upnl>=0?'pos':'neg'):'';
+      var bdr=upnl!=null?(upnl>=0?'1px solid rgba(16,185,129,.35)':'1px solid rgba(255,68,102,.25)'):'1px solid var(--border)';
+      return '<div class="mtc" style="border:'+bdr+'">'
+        +'<div class="mtc-top">'
+          +'<div style="display:flex;align-items:center;gap:8px">'
+            +'<span class="mtc-sym">'+s.replace('USDT','')+'<span style="font-size:.72rem;color:var(--mut);font-weight:400">/USDT</span></span>'
+            +'<span class="sdir s'+dir+'">'+p.direction+'</span>'
+          +'</div>'
+          +'<span class="mtc-pnl '+pnlCls+'">'+pnlStr+'</span>'
+        +'</div>'
+        +'<div class="mtc-g">'
+          +'<div class="mtc-c"><span class="mtc-l">Entry</span><span class="mtc-v">$'+(p.entry_price||0).toFixed(4)+'</span></div>'
+          +'<div class="mtc-c"><span class="mtc-l">Current</span><span class="mtc-v" style="color:var(--accent)">'+cp+'</span></div>'
+          +'<div class="mtc-c"><span class="mtc-l">Size</span><span class="mtc-v">$'+(p.position_size_usdt||0).toFixed(0)+'</span></div>'
+        +'</div>'
+        +'<div class="mtc-g" style="margin-top:5px">'
+          +'<div class="mtc-c"><span class="mtc-l">Stop Loss</span><span class="mtc-v neg">$'+(p.stop_loss||0).toFixed(4)+'</span></div>'
+          +'<div class="mtc-c"><span class="mtc-l">Take Profit</span><span class="mtc-v pos">$'+(p.take_profit||0).toFixed(4)+'</span></div>'
+          +'<div class="mtc-c"><span class="mtc-l">Score</span><span class="mtc-v" style="color:var(--yel)">'+(p.signal_score||'--')+'</span></div>'
+        +'</div>'
+        +'<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);display:flex;justify-content:space-between;font-size:.68rem;color:var(--mut)">'
+          +'<span>Qty: '+(p.quantity||'--')+'</span>'
+          +'<span>'+( p.exchange||'--')+'</span>'
+        +'</div>'
+      +'</div>';
+    }).join(''):'<div style="color:var(--mut);padding:28px;text-align:center;font-size:.82rem">No open positions</div>';
+    return;
+  }
+
+  // ── Desktop: table rows ──
+  if(!tb)return;
   tb.innerHTML=ents.length?ents.map(function(e){
     var s=e[0],p=e[1];
     var dir=(p.direction||'LONG').toLowerCase();
@@ -681,9 +900,45 @@ function rPos(pos, exp) {
   }).join(''):'<tr><td colspan="11" style="text-align:center;color:var(--mut);padding:18px">No open positions</td></tr>';
 }
 
+function rPending(orders){
+  var card=document.getElementById('pending-card');
+  var tb=document.getElementById('pending-tb');
+  var badge=document.getElementById('pending-count');
+  if(!card||!tb)return;
+  if(!orders||!orders.length){
+    card.style.display='none';
+    return;
+  }
+  card.style.display='';
+  if(badge)badge.textContent=orders.length+' order'+(orders.length>1?'s':'');
+  tb.innerHTML=orders.map(function(o){
+    var dir=(o.direction||'LONG').toLowerCase();
+    var pct=o.timeout_s>0?Math.round((o.remaining_s/o.timeout_s)*100):0;
+    var barCol=pct>50?'#10b981':pct>20?'#f59e0b':'#ff4466';
+    var bar='<div style="background:var(--card);border-radius:4px;height:6px;width:80px;overflow:hidden">'
+      +'<div style="background:'+barCol+';height:100%;width:'+pct+'%;transition:width 1s"></div></div>';
+    var timeStr=o.remaining_s>0
+      ?Math.floor(o.remaining_s/60)+'m '+Math.round(o.remaining_s%60)+'s'
+      :'<span style="color:#ff4466">Expiring…</span>';
+    return '<tr>'
+      +'<td class="tbls">'+o.symbol+'</td>'
+      +'<td><span class="sdir s'+dir+'">'+o.direction+'</span></td>'
+      +'<td style="font-weight:600">'+Number(o.limit_price).toFixed(4)+'</td>'
+      +'<td class="tn">'+Number(o.stop_loss).toFixed(4)+'</td>'
+      +'<td class="tp">'+Number(o.take_profit).toFixed(4)+'</td>'
+      +'<td>'+(o.quantity||'--')+'</td>'
+      +'<td style="color:var(--mut)">'+o.retry_count+'/'+o.max_retries+'</td>'
+      +'<td>'+bar+'<div style="font-size:.65rem;color:var(--mut);margin-top:2px">'+timeStr+'</div></td>'
+      +'<td><span class="sbg" style="background:rgba(245,158,11,.15);color:#f59e0b;font-size:.65rem">WAITING FILL</span></td>'
+      +'</tr>';
+  }).join('');
+}
+
 async function lTr(){
   var d=await ap('/api/portfolio');
   rPos(d.positions||{}, d.risk_exposure||{});
+  var pd=await ap('/api/pending-orders');
+  rPending(pd.pending_orders||[]);
 }
 
 async function lPf(){
@@ -766,6 +1021,51 @@ async function rAll(){
 }
 
 function rCharts(){ap('/api/metrics').then(function(m){bPC(m);bWL(m);});}
+
+// ── Strategy Discovery ─────────────────────────────────────────────────────
+async function lStr(){
+  var d=await ap('/api/strategy-stats');
+  var strats=d.strategies||[];
+  var best=d.best||null;
+
+  var badge=document.getElementById('str-best-badge');
+  if(best){badge.textContent='⭐ Best: '+best;badge.style.display='inline';}
+  else{badge.style.display='none';}
+
+  var grid=document.getElementById('str-grid');
+  if(!strats.length){grid.innerHTML='<div style="color:var(--mut);font-size:.78rem;padding:12px">No trades recorded yet. Strategy stats will appear after the first closed trade.</div>';return;}
+
+  grid.innerHTML=strats.map(function(s){
+    var isBest=s.name===best;
+    var wr=s.win_rate||0;
+    var wrColor=wr>=60?'var(--grn)':wr>=45?'var(--yel)':'var(--red)';
+    var pnlColor=(s.total_pnl||0)>=0?'var(--grn)':'var(--red)';
+    var pnlSign=(s.total_pnl||0)>=0?'+':'';
+    var recentBars=(s.recent_pnl||[]).map(function(p){
+      var h=Math.min(Math.abs(p)/10*100,100);
+      var c=p>0?'var(--grn)':'var(--red)';
+      return '<div style="width:7px;height:'+h+'%;background:'+c+';border-radius:2px;flex-shrink:0"></div>';
+    }).join('');
+
+    return '<div style="background:var(--bg3);border:1px solid '+(isBest?'var(--accent)':'var(--border)')+';border-radius:10px;padding:14px;position:relative">'
+      +(isBest?'<div style="position:absolute;top:8px;right:8px;font-size:.65rem;background:rgba(0,212,170,.15);color:var(--accent);border:1px solid var(--accent);border-radius:12px;padding:2px 8px;font-weight:700">BEST</div>':'')
+      +'<div style="font-weight:700;font-size:.9rem;margin-bottom:10px;color:var(--txt)">'+s.name+'</div>'
+      +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">'
+        +'<div><div style="font-size:.65rem;color:var(--mut);margin-bottom:2px">WIN RATE</div>'
+          +'<div style="font-size:1.1rem;font-weight:700;color:'+wrColor+'">'+wr.toFixed(1)+'%</div></div>'
+        +'<div><div style="font-size:.65rem;color:var(--mut);margin-bottom:2px">TOTAL PnL</div>'
+          +'<div style="font-size:1.1rem;font-weight:700;color:'+pnlColor+'">'+pnlSign+(s.total_pnl||0).toFixed(2)+'</div></div>'
+        +'<div><div style="font-size:.65rem;color:var(--mut);margin-bottom:2px">TRADES</div>'
+          +'<div style="font-size:.88rem;font-weight:600;color:var(--txt)">'+(s.total_trades||0)+'</div></div>'
+        +'<div><div style="font-size:.65rem;color:var(--mut);margin-bottom:2px">W / L</div>'
+          +'<div style="font-size:.88rem;font-weight:600"><span style="color:var(--grn)">'+(s.wins||0)+'</span> / <span style="color:var(--red)">'+(s.losses||0)+'</span></div></div>'
+      +'</div>'
+      +'<div style="margin-bottom:6px"><div class="prog"><div class="bar" style="width:'+wr+'%"></div></div></div>'
+      +(recentBars?'<div style="font-size:.63rem;color:var(--mut);margin-bottom:4px">Recent 10 trades</div>'
+        +'<div style="display:flex;align-items:flex-end;gap:2px;height:22px">'+recentBars+'</div>':'')
+      +'</div>';
+  }).join('');
+}
 
 // ── AI Integration ──────────────────────────────────────────────────────────
 var _aiModels={

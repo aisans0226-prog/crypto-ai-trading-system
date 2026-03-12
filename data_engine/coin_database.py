@@ -9,6 +9,7 @@ The system populates these tables automatically as it scans and trades,
 building a growing knowledge base used by ResearchEngine to bias future
 decisions toward historically profitable setups.
 """
+import json
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -59,6 +60,20 @@ class ResearchLog(Base):
     executed       = Column(Boolean, default=False)
     trade_id       = Column(Integer, nullable=True)  # FK → trades.id
     outcome_pnl    = Column(Float, nullable=True)    # set when trade closes
+
+
+class StrategyStats(Base):
+    """One row per strategy. Win-rate, PnL, and recent-performance tracking."""
+    __tablename__ = "strategy_stats"
+
+    name             = Column(String(50), primary_key=True)
+    total_trades     = Column(Integer, default=0)
+    wins             = Column(Integer, default=0)
+    losses           = Column(Integer, default=0)
+    total_pnl        = Column(Float,   default=0.0)
+    avg_pnl          = Column(Float,   default=0.0)   # rolling average PnL per trade
+    recent_pnl_json  = Column(String(500), default="[]")  # JSON list of last 10 PnL values
+    updated_at       = Column(DateTime, default=datetime.utcnow)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -259,3 +274,67 @@ class CoinDatabase:
             }
             for r in rows
         ]
+
+    # ── Strategy performance ───────────────────────────────────────────────
+    async def record_strategy_outcome(self, name: str, pnl: float) -> None:
+        """Called every time a trade managed by a named strategy closes."""
+        async with self._sf() as session:
+            res = await session.execute(
+                select(StrategyStats).where(StrategyStats.name == name)
+            )
+            row = res.scalar_one_or_none()
+            now = datetime.utcnow()
+            if row:
+                recent = json.loads(row.recent_pnl_json or "[]")
+                recent.append(pnl)
+                recent = recent[-10:]   # keep only last 10
+                total  = row.total_trades + 1
+                new_avg = round(((row.avg_pnl * row.total_trades) + pnl) / total, 4)
+                await session.execute(
+                    update(StrategyStats).where(StrategyStats.name == name).values(
+                        total_trades    = total,
+                        wins            = row.wins   + (1 if pnl > 0 else 0),
+                        losses          = row.losses + (1 if pnl <= 0 else 0),
+                        total_pnl       = round(row.total_pnl + pnl, 4),
+                        avg_pnl         = new_avg,
+                        recent_pnl_json = json.dumps(recent),
+                        updated_at      = now,
+                    )
+                )
+            else:
+                session.add(StrategyStats(
+                    name            = name,
+                    total_trades    = 1,
+                    wins            = 1 if pnl > 0 else 0,
+                    losses          = 1 if pnl <= 0 else 0,
+                    total_pnl       = round(pnl, 4),
+                    avg_pnl         = round(pnl, 4),
+                    recent_pnl_json = json.dumps([pnl]),
+                    updated_at      = now,
+                ))
+            await session.commit()
+
+    async def get_strategy_stats(self) -> List[dict]:
+        """All strategy rows sorted by win-rate descending."""
+        async with self._sf() as session:
+            result = await session.execute(
+                select(StrategyStats).order_by(StrategyStats.total_trades.desc())
+            )
+            rows = result.scalars().all()
+        out = []
+        for r in rows:
+            total  = r.total_trades or 0
+            wins   = r.wins or 0
+            recent = json.loads(r.recent_pnl_json or "[]")
+            out.append({
+                "name":         r.name,
+                "total_trades": total,
+                "wins":         wins,
+                "losses":       r.losses or 0,
+                "win_rate":     round(wins / total * 100, 1) if total > 0 else 0.0,
+                "total_pnl":    round(r.total_pnl or 0.0, 2),
+                "avg_pnl":      round(r.avg_pnl or 0.0, 2),
+                "recent_pnl":   recent,
+                "updated_at":   r.updated_at.isoformat() if r.updated_at else None,
+            })
+        return out

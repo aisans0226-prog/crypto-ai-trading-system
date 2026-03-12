@@ -58,6 +58,19 @@ class BinanceExecutor:
             data = await r.json()
             if r.status != 200:
                 logger.error("Binance API GET error {}: {}", r.status, data)
+                raise Exception(f"Binance API error {r.status}: {data.get('msg', 'unknown')}")
+            return data
+
+    async def _delete(self, path: str, params: dict) -> dict:
+        params["timestamp"] = int(time.time() * 1000)
+        params["signature"] = self._sign(params)
+        headers = {"X-MBX-APIKEY": self._key}
+        url = self._base + path
+        async with self._session.delete(url, headers=headers, params=params) as r:
+            data = await r.json()
+            if r.status != 200:
+                logger.error("Binance API DELETE error {}: {}", r.status, data)
+                raise Exception(f"Binance API error {r.status}: {data.get('msg', 'unknown')}")
             return data
 
     async def _post(self, path: str, params: dict) -> dict:
@@ -187,6 +200,67 @@ class BinanceExecutor:
             logger.debug("get_recent_pnl Binance error {}: {}", symbol, exc)
         return 0.0
 
+    async def place_limit_order(
+        self, symbol: str, side: str, quantity: float, price: float
+    ) -> dict:
+        """Place a GTC LIMIT entry order."""
+        logger.info("Binance place LIMIT {} {} qty={} price={}", symbol, side, quantity, price)
+        return await self._post("/fapi/v1/order", {
+            "symbol": symbol,
+            "side": side,
+            "type": "LIMIT",
+            "price": round(price, 8),
+            "quantity": quantity,
+            "timeInForce": "GTC",
+        })
+
+    async def get_order_status(self, symbol: str, order_id: int) -> dict:
+        """Fetch current status of a specific order."""
+        return await self._get("/fapi/v1/order", {"symbol": symbol, "orderId": order_id})
+
+    async def cancel_order(self, symbol: str, order_id) -> dict:
+        """Cancel a specific open order by ID."""
+        return await self._delete("/fapi/v1/order", {
+            "symbol": symbol,
+            "orderId": int(order_id),
+        })
+
+    async def close_position_market(
+        self, symbol: str, direction: str, quantity: float
+    ) -> dict:
+        """Force-close an open position with a market order (reduceOnly)."""
+        close_side = "SELL" if direction == "LONG" else "BUY"
+        logger.info("Binance force-close {} {} qty={}", symbol, close_side, quantity)
+        return await self._post("/fapi/v1/order", {
+            "symbol": symbol,
+            "side": close_side,
+            "type": "MARKET",
+            "quantity": quantity,
+            "reduceOnly": "true",
+        })
+
+    async def update_stop_loss(
+        self,
+        symbol: str,
+        direction: str,
+        quantity: float,
+        new_sl_price: float,
+        old_order_id: Optional[int] = None,
+    ) -> dict:
+        """
+        Replace the existing SL order with a new STOP_MARKET at new_sl_price.
+        Places new order FIRST (continuous protection), then cancels old.
+        Returns the new SL order dict.
+        """
+        side = "BUY" if direction == "LONG" else "SELL"
+        new_order = await self.place_stop_loss(symbol, side, quantity, new_sl_price)
+        if old_order_id:
+            try:
+                await self.cancel_order(symbol, old_order_id)
+            except Exception as exc:
+                logger.debug("Cancel old SL order {} failed: {}", old_order_id, exc)
+        return new_order
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Bybit Futures Executor
@@ -218,7 +292,6 @@ class BybitExecutor:
         ).hexdigest()
 
     async def _get(self, path: str, params: dict) -> dict:
-        import json as _json
         ts = str(int(time.time() * 1000))
         recv_window = "5000"
         params_str = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
@@ -311,3 +384,106 @@ class BybitExecutor:
         except Exception as exc:
             logger.debug("get_account_balance Bybit error: {}", exc)
         return 0.0
+
+    async def cancel_order(self, symbol: str, order_id) -> dict:
+        """Cancel a specific open order by ID."""
+        resp = await self._post("/v5/order/cancel", {
+            "category": "linear",
+            "symbol": symbol,
+            "orderId": str(order_id),
+        })
+        if resp.get("retCode") != 0:
+            logger.debug("Bybit cancel_order {}: {}", order_id, resp.get("retMsg"))
+        return resp
+
+    async def place_limit_order(
+        self, symbol: str, side: str, quantity: float, price: float
+    ) -> dict:
+        """Place a GTC LIMIT entry order."""
+        logger.info("Bybit place LIMIT {} {} qty={} price={}", symbol, side, quantity, price)
+        resp = await self._post("/v5/order/create", {
+            "category": "linear",
+            "symbol": symbol,
+            "side": side,           # "Buy" | "Sell"
+            "orderType": "Limit",
+            "qty": str(quantity),
+            "price": str(round(price, 8)),
+            "timeInForce": "GTC",
+        })
+        if resp.get("retCode") != 0:
+            logger.error("Bybit LIMIT order rejected {}: {}", symbol, resp.get("retMsg"))
+        return resp
+
+    async def get_order_status(self, symbol: str, order_id: str) -> dict:
+        """
+        Fetch current status of a specific order.
+        Tries active orders first; falls back to history for filled/cancelled orders.
+        """
+        resp = await self._get("/v5/order/realtime", {
+            "category": "linear", "symbol": symbol, "orderId": order_id,
+        })
+        if resp.get("result", {}).get("list"):
+            return resp
+        return await self._get("/v5/order/history", {
+            "category": "linear", "symbol": symbol, "orderId": order_id,
+        })
+
+    async def set_position_tp_sl(
+        self, symbol: str, stop_loss: float, take_profit: float
+    ) -> dict:
+        """Set / update both SL and TP on an open Bybit linear position."""
+        resp = await self._post("/v5/position/trading-stop", {
+            "category": "linear",
+            "symbol": symbol,
+            "stopLoss": str(stop_loss),
+            "takeProfit": str(take_profit),
+            "slTriggerBy": "LastPrice",
+            "tpTriggerBy": "LastPrice",
+            "positionIdx": 0,
+        })
+        if resp.get("retCode") != 0:
+            logger.error("Bybit set_position_tp_sl {}: {}", symbol, resp.get("retMsg"))
+        return resp
+
+    async def close_position_market(
+        self, symbol: str, direction: str, quantity: float
+    ) -> dict:
+        """Force-close an open position with a market order (reduceOnly)."""
+        close_side = "Sell" if direction == "LONG" else "Buy"
+        logger.info("Bybit force-close {} {} qty={}", symbol, close_side, quantity)
+        resp = await self._post("/v5/order/create", {
+            "category": "linear",
+            "symbol": symbol,
+            "side": close_side,
+            "orderType": "Market",
+            "qty": str(quantity),
+            "reduceOnly": True,
+            "timeInForce": "GoodTillCancel",
+        })
+        if resp.get("retCode") != 0:
+            logger.error("Bybit force-close failed {}: {}", symbol, resp.get("retMsg"))
+        return resp
+
+    async def update_stop_loss(
+        self,
+        symbol: str,
+        direction: str,
+        quantity: float,
+        new_sl_price: float,
+        old_order_id: Optional[str] = None,     # accepted for interface compatibility, unused
+    ) -> dict:
+        """
+        Update SL on an open Bybit position via the trading-stop endpoint.
+        Bybit manages SL at the position level (not as a cancellable order),
+        so old_order_id is intentionally ignored.
+        """
+        resp = await self._post("/v5/position/trading-stop", {
+            "category": "linear",
+            "symbol": symbol,
+            "stopLoss": str(new_sl_price),
+            "slTriggerBy": "LastPrice",
+            "positionIdx": 0,
+        })
+        if resp.get("retCode") != 0:
+            logger.debug("Bybit update_stop_loss {}: {}", symbol, resp.get("retMsg"))
+        return resp

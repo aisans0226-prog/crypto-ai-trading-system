@@ -43,11 +43,43 @@ class Settings(BaseSettings):
 
     # Account / Risk
     account_balance_usdt: float = 1000.0
-    risk_per_trade_pct: float = 1.0
+    risk_per_trade_pct: float = 1.0        # 1% risk per trade
     max_leverage: int = 3
-    max_open_trades: int = 5
+    max_open_trades: int = 5               # max 5 simultaneous positions
     min_risk_reward_ratio: float = 2.0
     max_daily_trades: int = 3              # max trades bot can open per day
+    max_daily_loss_pct: float = 5.0        # halt trading if daily realized loss >= 5% of balance
+
+    # ── Smart position exit controls ──────────────────────────────────────────
+    # Entry order type: MARKET fills instantly; LIMIT waits for a better price
+    entry_order_type: str = "MARKET"          # MARKET | LIMIT
+    limit_entry_offset_pct: float = 0.05      # place LIMIT this % inside market (LONG=below, SHORT=above)
+    limit_order_timeout_seconds: int = 60     # cancel LIMIT entry if not filled within N seconds
+    limit_order_max_retries: int = 3          # max re-place attempts before giving up on entry
+
+    # Entry guard: abort if live price has drifted this far from signal price
+    entry_max_deviation_pct: float = 0.8
+
+    # Stop-loss cap: strategy SL is capped at this % distance from entry
+    max_stop_loss_pct: float = 2.5         # SL never further than 2.5% from entry
+
+    # Trailing stop: slides SL upward (LONG) / downward (SHORT) as price moves in favour
+    trailing_stop_enabled: bool = True
+    trailing_stop_activation_pct: float = 3.0   # % profit required to activate
+    trailing_stop_distance_pct: float = 1.0      # keep SL this % behind the peak price
+    trailing_stop_min_move_pct: float = 0.3      # only update exchange SL if new SL improves by ≥ this %
+
+    # Breakeven stop: move SL to entry + 0.1% buffer once profit reaches breakeven_trigger_pct
+    breakeven_stop_enabled: bool = True
+    breakeven_trigger_pct: float = 2.0     # activate after +2% unrealised profit
+
+    # Time-based exit: force-close position after N hours regardless of SL/TP (0 = disabled)
+    max_position_hold_hours: float = 18.0
+
+    # Reversal exit: exit early if position is losing AND has been open long enough
+    reversal_exit_enabled: bool = True
+    reversal_exit_pct: float = 2.0         # % loss from entry that triggers early exit
+    reversal_exit_min_hours: float = 2.0   # minimum hours open before reversal exit fires
 
     # AI Signal — stricter quality gates
     signal_score_threshold: int = 11       # raised from 8 → requires strong scanner score
@@ -90,6 +122,9 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     ai_model: str = ""                 # e.g. gpt-4o, claude-3-5-sonnet-20241022, gemini-1.5-pro
     ai_analysis_enabled: bool = False  # enable LLM-enhanced trade research
+
+    # Auto Strategy Discovery
+    strategy_discovery_enabled: bool = True  # if False, falls back to first-match (legacy)
 
 
 settings = Settings()
