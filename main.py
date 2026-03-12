@@ -357,6 +357,14 @@ class TradingSystem:
                         reverse=True,
                     )
 
+                # ── Cap signals per scan to keep each cycle under ~60 seconds.
+                # Watchlist coins are always included first (needed for confirmation).
+                # Only new signals are capped — top scoring ones take priority.
+                _cap = settings.effective_max_signals_per_scan
+                _wl_signals  = [s for s in signals if s.symbol in self._watchlist]
+                _new_signals = [s for s in signals if s.symbol not in self._watchlist]
+                signals = _wl_signals + _new_signals[:_cap]
+
                 # Track which symbols are currently qualifying (for watchlist expiry)
                 live_qualifying: set = set()
 

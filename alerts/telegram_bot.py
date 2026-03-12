@@ -2,6 +2,7 @@
 alerts/telegram_bot.py — Real-time trade alerts via Telegram and Discord.
 """
 import asyncio
+import html
 from typing import Optional, Callable, Awaitable
 import aiohttp
 from loguru import logger
@@ -116,13 +117,13 @@ class AlertSystem:
     async def send_watchlist_alert(self, signal: SignalResult, confirmations_needed: int) -> None:
         """Stage 1: signal detected, added to watchlist for monitoring."""
         msg = (
-            f"🔍 *SIGNAL DETECTED — Monitoring*\n\n"
-            f"Coin: `{signal.symbol}`\n"
-            f"Direction: *{signal.direction}*\n"
-            f"Score: *{signal.score}*\n"
-            f"Price: `{signal.price}`\n"
-            f"24h Change: `{signal.price_change_pct:+.2f}%`\n\n"
-            f"⏳ Watching for `{confirmations_needed}` more scan cycle(s) "
+            f"🔍 <b>SIGNAL DETECTED — Monitoring</b>\n\n"
+            f"Coin: <code>{self._esc(signal.symbol)}</code>\n"
+            f"Direction: <b>{self._esc(signal.direction)}</b>\n"
+            f"Score: <b>{signal.score}</b>\n"
+            f"Price: <code>{signal.price}</code>\n"
+            f"24h Change: <code>{signal.price_change_pct:+.2f}%</code>\n\n"
+            f"⏳ Watching for <code>{confirmations_needed}</code> more scan cycle(s) "
             f"before deep research..."
         )
         await asyncio.gather(
@@ -134,19 +135,19 @@ class AlertSystem:
     async def send_research_result(self, signal: SignalResult, result) -> None:
         """Stage 2: deep research completed — passed or failed."""
         if result.passed:
-            ok_lines  = "\n".join(f"  ✅ {r}" for r in result.reasons[:6])
-            header = f"📊 *RESEARCH PASSED* ✅ — Entering trade"
+            ok_lines = "\n".join(f"  ✅ {self._esc(r)}" for r in result.reasons[:6])
+            header = "📊 <b>RESEARCH PASSED</b> ✅ — Entering trade"
         else:
-            ok_lines  = "\n".join(f"  ❌ {r}" for r in result.failed_reasons[:6])
-            header = f"❌ *RESEARCH FAILED* — Skipping trade"
+            ok_lines = "\n".join(f"  ❌ {self._esc(r)}" for r in result.failed_reasons[:6])
+            header = "❌ <b>RESEARCH FAILED</b> — Skipping trade"
 
         msg = (
             f"{header}\n\n"
-            f"Coin: `{signal.symbol}` | *{signal.direction}*\n"
-            f"Signal Score: *{signal.score}*\n"
-            f"Research Score: *{result.score:.1f}/10* | "
-            f"Confidence: *{result.confidence*100:.0f}%*\n"
-            f"MTF Alignment: *{result.mtf_alignment*100:.0f}%*\n\n"
+            f"Coin: <code>{self._esc(signal.symbol)}</code> | <b>{self._esc(signal.direction)}</b>\n"
+            f"Signal Score: <b>{signal.score}</b>\n"
+            f"Research Score: <b>{result.score:.1f}/10</b> | "
+            f"Confidence: <b>{result.confidence*100:.0f}%</b>\n"
+            f"MTF Alignment: <b>{result.mtf_alignment*100:.0f}%</b>\n\n"
             f"{'Reasons:' if result.passed else 'Issues:'}\n{ok_lines}"
         )
         await asyncio.gather(
@@ -171,14 +172,14 @@ class AlertSystem:
         sl_pct = abs(entry - sl) / entry * 100
         tp_pct = abs(tp - entry) / entry * 100
         msg = (
-            f"⚡ *ENTERING TRADE*\n\n"
-            f"Coin: `{symbol}` | *{direction}*\n"
-            f"Entry: `${entry:,.4f}`\n"
-            f"Stop Loss: `${sl:,.4f}` ({sl_pct:.2f}%)\n"
-            f"Take Profit: `${tp:,.4f}` ({tp_pct:.2f}%)\n"
-            f"Risk/Reward: *1:{rr:.1f}*\n\n"
-            f"Signal Score: *{signal_score}* | Research: *{research_score:.1f}/10*\n"
-            f"Trades left today: *{daily_remaining}*"
+            f"⚡ <b>ENTERING TRADE</b>\n\n"
+            f"Coin: <code>{self._esc(symbol)}</code> | <b>{self._esc(direction)}</b>\n"
+            f"Entry: <code>${entry:,.4f}</code>\n"
+            f"Stop Loss: <code>${sl:,.4f}</code> ({sl_pct:.2f}%)\n"
+            f"Take Profit: <code>${tp:,.4f}</code> ({tp_pct:.2f}%)\n"
+            f"Risk/Reward: <b>1:{rr:.1f}</b>\n\n"
+            f"Signal Score: <b>{signal_score}</b> | Research: <b>{research_score:.1f}/10</b>\n"
+            f"Trades left today: <b>{daily_remaining}</b>"
         )
         await asyncio.gather(
             self._send_telegram(msg),
@@ -193,21 +194,26 @@ class AlertSystem:
             return_exceptions=True,
         )
 
-    # ── Message formatting ────────────────────────────────────────────────
+    @staticmethod
+    def _esc(s) -> str:
+        """HTML-escape a value so it's safe inside Telegram HTML messages."""
+        return html.escape(str(s))
+
     @staticmethod
     def _format_signal(s: SignalResult) -> str:
-        signals_list = "\n".join(f"  ✅ {sig.replace('_', ' ')}" for sig in s.signals)
-        ai_line = f"🤖 AI Prediction: BULLISH +3\n" if s.ai_prediction >= 0.7 else ""
+        esc = html.escape
+        signals_list = "\n".join(f"  ✅ {esc(sig.replace('_', ' '))}" for sig in s.signals)
+        ai_line = "🤖 AI Prediction: BULLISH +3\n" if s.ai_prediction >= 0.7 else ""
         return (
-            f"🚨 *HIGH PROBABILITY TRADE*\n\n"
-            f"Coin: `{s.symbol}`\n"
-            f"Score: *{s.score}/13*\n\n"
-            f"📊 *Signals:*\n{signals_list}\n\n"
+            f"🚨 <b>HIGH PROBABILITY TRADE</b>\n\n"
+            f"Coin: <code>{esc(s.symbol)}</code>\n"
+            f"Score: <b>{s.score}/13</b>\n\n"
+            f"📊 <b>Signals:</b>\n{signals_list}\n\n"
             f"{ai_line}"
-            f"📈 Direction: *{s.direction}*\n"
-            f"💰 Price: `{s.price}`\n"
-            f"📉 24h Change: `{s.price_change_pct:+.2f}%`\n"
-            f"💧 24h Volume: `${s.volume_24h:,.0f}`\n"
+            f"📈 Direction: <b>{esc(s.direction)}</b>\n"
+            f"💰 Price: <code>{s.price}</code>\n"
+            f"📉 24h Change: <code>{s.price_change_pct:+.2f}%</code>\n"
+            f"💧 24h Volume: <code>${s.volume_24h:,.0f}</code>\n"
         )
 
     # ── Telegram ──────────────────────────────────────────────────────────
@@ -220,7 +226,7 @@ class AlertSystem:
         payload = {
             "chat_id": settings.telegram_chat_id,
             "text": text,
-            "parse_mode": "Markdown",
+            "parse_mode": "HTML",
             "disable_web_page_preview": True,
         }
         try:
@@ -237,8 +243,12 @@ class AlertSystem:
             return
         if self._muted:
             return  # notifications silenced — trading continues normally
-        # Convert Markdown bold to Discord-compatible
-        clean = text.replace("*", "**").replace("`", "`")
+        # Convert HTML tags to Discord Markdown equivalents
+        clean = (
+            text.replace("<b>", "**").replace("</b>", "**")
+                .replace("<code>", "`").replace("</code>", "`")
+                .replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+        )
         payload = {"content": clean}
         try:
             async with self._session.post(

@@ -95,6 +95,7 @@ class Settings(BaseSettings):
     scan_interval_seconds: int = 60
     max_coins_to_scan: int = 500
     min_volume_usdt: float = 1_000_000.0   # raised from 500k → higher quality coins
+    max_signals_per_scan: int = 150        # cap on new signals processed per cycle (prevents 7-8 min loops)
 
     # Dashboard
     dashboard_host: str = "0.0.0.0"
@@ -182,6 +183,12 @@ class Settings(BaseSettings):
     def effective_min_volume_usdt(self) -> float:
         """Minimum 24h volume filter. In training mode: 200k (more coins eligible)."""
         return 200_000.0 if self.training_mode else self.min_volume_usdt
+
+    @property
+    def effective_max_signals_per_scan(self) -> int:
+        """Max NEW signals processed per scan cycle (watchlist coins always included).
+        Training mode uses 50 to keep each scan cycle under ~60 seconds."""
+        return 50 if self.training_mode else self.max_signals_per_scan
 
 
 settings = Settings()
