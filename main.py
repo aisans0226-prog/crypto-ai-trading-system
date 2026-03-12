@@ -318,7 +318,11 @@ class TradingSystem:
                 live_qualifying: set = set()
 
                 for signal in signals:
-                    if not signal.is_high_probability:
+                    # Pre-filter: skip only signals that can't reach threshold even with
+                    # max ML (+3) + sentiment (+1) boost. This allows scanner scores of
+                    # (threshold - 4) or above to proceed to ML/sentiment evaluation.
+                    pre_filter_score = max(0, settings.signal_score_threshold - 4)
+                    if signal.score < pre_filter_score:
                         continue
 
                     # Cooldown applies only when adding NEW entries to watchlist
