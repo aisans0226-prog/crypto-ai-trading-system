@@ -13,13 +13,23 @@ USER = "administrator"
 PASS = "Abc@1234"
 
 FILES = [
+    "main.py",
     "config.py",
     "dashboard/api_server.py",
     "dashboard/dashboard.html",
+    "data_engine/coin_database.py",
+    "strategy/trend_strategy.py",
+    "strategy/breakout_strategy.py",
+    "strategy/liquidity_strategy.py",
+    "strategy/momentum_strategy.py",
+    "strategy/mean_reversion_strategy.py",
+    "strategy/scalp_strategy.py",
+    "strategy/strategy_registry.py",
     "scanners/market_scanner.py",
     "scanners/research_engine.py",
     "trading/risk_manager.py",
-    "data_engine/coin_database.py",
+    "trading/trade_executor.py",
+    "portfolio/portfolio_manager.py",
     "ai_engine/__init__.py",
     "ai_engine/llm_analyzer.py",
 ]
@@ -39,9 +49,10 @@ def main():
     ssh.connect(HOST, port=22, username=USER, password=PASS, timeout=15)
     log_lines.append("SSH connected to " + HOST)
 
-    # Ensure ai_engine directory exists on VPS
+    # Ensure required subdirectories exist on VPS
     run(ssh, f'mkdir -p "{REMOTE_ROOT}/ai_engine"')
-    log_lines.append("ai_engine/ dir ensured on VPS")
+    run(ssh, f'mkdir -p "{REMOTE_ROOT}/strategy"')
+    log_lines.append("subdirs ensured on VPS")
 
     # Upload files via SFTP
     sftp = ssh.open_sftp()
