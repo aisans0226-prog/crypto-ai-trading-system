@@ -92,13 +92,16 @@ async def _enrich_positions(positions: Dict[str, dict]) -> None:
         cp = prices.get(sym)
         if not cp:
             continue
-        qty   = pos.get("quantity", 0)
-        entry = pos.get("entry_price", 0)
-        size  = pos.get("position_size_usdt") or (qty * entry) or 1
+        qty      = pos.get("quantity", 0)
+        entry    = pos.get("entry_price", 0)
+        leverage = pos.get("leverage", 1) or 1
+        size     = pos.get("position_size_usdt") or (qty * entry) or 1
+        # margin = collateral actually at risk; PnL % is ROI on margin (not notional)
+        margin   = size / leverage
         upnl  = (cp - entry) * qty if pos.get("direction", "LONG") == "LONG" else (entry - cp) * qty
         pos["current_price"]        = round(cp, 6)
         pos["unrealized_pnl_usdt"]  = round(upnl, 2)
-        pos["unrealized_pnl_pct"]   = round(upnl / size * 100, 2) if size else 0
+        pos["unrealized_pnl_pct"]   = round(upnl / margin * 100, 2) if margin else 0
 
 
 @app.get("/api/portfolio")
@@ -116,8 +119,8 @@ async def get_portfolio():
 async def get_metrics():
     if not state.portfolio_manager:
         return {
-            "total_trades": 0, "open_trades": 0, "win_rate": 0.0,
-            "profit_factor": 0.0, "max_drawdown_pct": 0.0, "daily_pnl": 0.0,
+            "total_trades": 0, "open_trades": 0, "wins_count": 0, "losses_count": 0,
+            "win_rate": 0.0, "profit_factor": 0.0, "max_drawdown_pct": 0.0, "daily_pnl": 0.0,
             "total_pnl": 0.0, "balance": settings.account_balance_usdt, "pnl_trend": [],
         }
     return await state.portfolio_manager.calculate_metrics()
@@ -534,11 +537,13 @@ async def _realtime_loop() -> None:
             continue
         try:
             metrics = await state.portfolio_manager.calculate_metrics()
+            # Include risk exposure in metrics broadcast so uSt() can show dynamic max trades
+            exposure  = await state.portfolio_manager.get_risk_exposure()
+            metrics["risk_exposure"] = exposure
             await broadcast("metrics", metrics)
 
             positions = dict(await state.portfolio_manager.get_open_positions())
             await _enrich_positions(positions)
-            exposure  = await state.portfolio_manager.get_risk_exposure()
             await broadcast("positions", {"positions": positions, "exposure": exposure})
 
             # Broadcast pending LIMIT entry orders so dashboard can show countdown
@@ -578,6 +583,8 @@ async def ws_endpoint(websocket: WebSocket):
     if state.portfolio_manager:
         try:
             metrics = await state.portfolio_manager.calculate_metrics()
+            exposure_init = await state.portfolio_manager.get_risk_exposure()
+            metrics["risk_exposure"] = exposure_init
             await websocket.send_text(json.dumps({
                 "type": "metrics", "data": metrics, "ts": datetime.utcnow().isoformat()
             }))

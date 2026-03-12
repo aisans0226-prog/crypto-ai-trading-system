@@ -215,6 +215,8 @@ class PortfolioManager:
         base: dict = {
             "total_trades": 0,
             "open_trades": len(self._open_positions),
+            "wins_count": 0,
+            "losses_count": 0,
             "win_rate": 0.0,
             "profit_factor": 0.0,
             "max_drawdown_pct": 0.0,
@@ -268,6 +270,8 @@ class PortfolioManager:
         return {
             "total_trades": len(trades),
             "open_trades": len(self._open_positions),
+            "wins_count": len(wins),
+            "losses_count": len(losses),
             "win_rate": round(win_rate, 2),
             "profit_factor": profit_factor,
             "max_drawdown_pct": round(max_dd, 2),
@@ -285,6 +289,7 @@ class PortfolioManager:
         exposure_pct = total_notional / self._balance * 100 if self._balance else 0
         return {
             "open_trades": len(positions),
+            "max_open_trades": settings.effective_max_open_trades,
             "total_notional_usdt": round(total_notional, 2),
             "exposure_pct": round(exposure_pct, 2),
         }
