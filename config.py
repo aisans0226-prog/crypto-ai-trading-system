@@ -51,6 +51,12 @@ class Settings(BaseSettings):
     max_daily_loss_pct: float = 5.0        # halt trading if daily realized loss >= 5% of balance
 
     # ── Smart position exit controls ──────────────────────────────────────────
+    # Entry order type: MARKET fills instantly; LIMIT waits for a better price
+    entry_order_type: str = "MARKET"          # MARKET | LIMIT
+    limit_entry_offset_pct: float = 0.05      # place LIMIT this % inside market (LONG=below, SHORT=above)
+    limit_order_timeout_seconds: int = 60     # cancel LIMIT entry if not filled within N seconds
+    limit_order_max_retries: int = 3          # max re-place attempts before giving up on entry
+
     # Entry guard: abort if live price has drifted this far from signal price
     entry_max_deviation_pct: float = 0.8
 

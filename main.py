@@ -77,6 +77,20 @@ class WatchlistEntry:
     confirmations: int = 0  # number of consecutive scan cycles signal remained high
 
 
+@dataclass
+class PendingEntry:
+    """In-flight LIMIT order awaiting exchange fill (or cancel + retry)."""
+    symbol: str
+    order_id: str
+    placed_at: float          # time.time() when the LIMIT order was placed
+    risk_params: object       # RiskParameters
+    signal: object            # SignalResult
+    retry_count: int          # how many times we've re-placed this entry
+    research_id: Optional[int]
+    research_score: float
+    strategy_name: Optional[str]
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Orchestrator
 # ─────────────────────────────────────────────────────────────────────────────
@@ -118,6 +132,9 @@ class TradingSystem:
         self._pending_research_ids: Dict[str, int] = {}    # symbol -> research_log id (for outcome)
         self._coin_db = CoinDatabase()
         self._research: Optional[ResearchEngine] = None    # initialised in start()
+
+        # Pending LIMIT entry orders (LIMIT mode only): tracked until fill or cancel
+        self._pending_entry_orders: Dict[str, PendingEntry] = {}  # symbol -> PendingEntry
 
         # WS feed handle (populated in start())
         self._ws_feed = None
@@ -198,6 +215,7 @@ class TradingSystem:
             self._arbitrage_loop(symbols),
             self._portfolio_sync_loop(),
             self._position_monitor_loop(),
+            self._limit_order_monitor_loop(),
             self._coin_ranking_loop(),
             self._updater.start_polling(),
             return_exceptions=True,
@@ -546,7 +564,70 @@ class TradingSystem:
                     )
                     return
 
-        # Notify trade entry (before executing, so user sees intent)
+        # ── LIMIT order path (live only) ───────────────────────────────────
+        # Place a LIMIT entry; SL/TP and portfolio open happen in
+        # _limit_order_monitor_loop() once the order is actually filled.
+        # send_trade_entry fires only when the fill is confirmed (not here).
+        if not self.dry_run and settings.entry_order_type == "LIMIT":
+            executor = self._bybit_exec if self.exchange == "bybit" else self._binance_exec
+            live_ticker = self._cache.tickers.get(risk_params.symbol, {})
+            live_price = float(live_ticker.get("c", 0)) or risk_params.entry_price
+            offset = settings.limit_entry_offset_pct / 100
+            if risk_params.direction == "LONG":
+                limit_price = round(live_price * (1 - offset), 8)
+            else:
+                limit_price = round(live_price * (1 + offset), 8)
+
+            try:
+                if self.exchange == "bybit":
+                    result = await executor.place_limit_order(
+                        risk_params.symbol,
+                        "Buy" if risk_params.direction == "LONG" else "Sell",
+                        risk_params.quantity, limit_price,
+                    )
+                    order_id = result.get("result", {}).get("orderId")
+                else:
+                    result = await executor.place_limit_order(
+                        risk_params.symbol,
+                        "BUY" if risk_params.direction == "LONG" else "SELL",
+                        risk_params.quantity, limit_price,
+                    )
+                    order_id = result.get("orderId")
+            except Exception as exc:
+                logger.error("Limit order placement failed {}: {}", risk_params.symbol, exc)
+                return
+
+            if not order_id:
+                logger.error("Limit order rejected — no order_id returned for {}", risk_params.symbol)
+                return
+
+            self._pending_entry_orders[risk_params.symbol] = PendingEntry(
+                symbol=risk_params.symbol,
+                order_id=str(order_id),
+                placed_at=time.time(),
+                risk_params=risk_params,
+                signal=signal,
+                retry_count=0,
+                research_id=research_id,
+                research_score=research_score,
+                strategy_name=strategy_name,
+            )
+            logger.info(
+                "⏳ LIMIT entry placed: {} {} @ {:.6f} | order_id={} | timeout={}s",
+                risk_params.symbol, risk_params.direction, limit_price,
+                order_id, settings.limit_order_timeout_seconds,
+            )
+            await self._alerts.send_text(
+                f"⏳ *{risk_params.symbol}* LIMIT order placed\n"
+                f"Direction: {risk_params.direction}\n"
+                f"Limit price: `{limit_price:.6f}`\n"
+                f"SL: `{risk_params.stop_loss:.6f}` | TP: `{risk_params.take_profit:.6f}`\n"
+                f"Cancels in {settings.limit_order_timeout_seconds}s if not filled"
+            )
+            return   # record_trade_opened() will be called when the order fills
+
+        # ── MARKET order path (or dry-run) ─────────────────────────────────
+        # Notify entry intent now — market orders fill immediately.
         await self._alerts.send_trade_entry(
             symbol=risk_params.symbol,
             direction=risk_params.direction,
@@ -558,7 +639,6 @@ class TradingSystem:
             research_score=research_score,
             daily_remaining=max(0, self._risk.daily_trades_remaining - 1),
         )
-
         self._risk.record_trade_opened()
         trade_id = None
 
@@ -811,6 +891,228 @@ class TradingSystem:
             except Exception as exc:
                 logger.debug("Dry run position check error {}: {}", symbol, exc)
 
+    # ── LIMIT order monitor ────────────────────────────────────────────────
+    async def _limit_order_monitor_loop(self) -> None:
+        """
+        Poll pending LIMIT entry orders every 10 s.
+        • Filled  → place SL/TP, open portfolio position, send entry alert.
+        • Timeout → cancel, retry at refreshed price up to limit_order_max_retries.
+        • Max retries exceeded → abandon and notify.
+        No-op in dry-run mode or when entry_order_type == MARKET.
+        """
+        while self._running:
+            try:
+                if not self._pending_entry_orders or self.dry_run:
+                    await asyncio.sleep(10)
+                    continue
+
+                executor = self._bybit_exec if self.exchange == "bybit" else self._binance_exec
+                now = time.time()
+
+                for symbol in list(self._pending_entry_orders.keys()):
+                    pending = self._pending_entry_orders.get(symbol)
+                    if not pending:
+                        continue
+
+                    elapsed = now - pending.placed_at
+
+                    # ── Query fill status from exchange ────────────────────
+                    try:
+                        if self.exchange == "bybit":
+                            status_data = await executor.get_order_status(
+                                symbol, pending.order_id
+                            )
+                            order_info = status_data.get("result", {}).get("list", [{}])[0]
+                            filled = order_info.get("orderStatus", "") == "Filled"
+                        else:
+                            status_data = await executor.get_order_status(
+                                symbol, int(pending.order_id)
+                            )
+                            filled = status_data.get("status", "") == "FILLED"
+                    except Exception as exc:
+                        logger.debug("Limit order status error {}: {}", symbol, exc)
+                        continue
+
+                    if filled:
+                        # ── Fill confirmed: place SL/TP + open position ────
+                        del self._pending_entry_orders[symbol]
+                        logger.info("✅ LIMIT order filled: {} — placing SL/TP", symbol)
+                        rp = pending.risk_params
+                        sl_order_id = tp_order_id = None
+                        try:
+                            if self.exchange == "bybit":
+                                await executor.set_position_tp_sl(
+                                    symbol, rp.stop_loss, rp.take_profit
+                                )
+                            else:
+                                side = "BUY" if rp.direction == "LONG" else "SELL"
+                                sl_r = await executor.place_stop_loss(
+                                    symbol, side, rp.quantity, rp.stop_loss
+                                )
+                                tp_r = await executor.place_take_profit(
+                                    symbol, side, rp.quantity, rp.take_profit
+                                )
+                                sl_order_id = sl_r.get("orderId")
+                                tp_order_id = tp_r.get("orderId")
+                        except Exception as exc:
+                            logger.error("SL/TP placement after LIMIT fill {}: {}", symbol, exc)
+
+                        self._risk.record_trade_opened()
+                        await self._alerts.send_trade_entry(
+                            symbol=rp.symbol,
+                            direction=rp.direction,
+                            entry=rp.entry_price,
+                            sl=rp.stop_loss,
+                            tp=rp.take_profit,
+                            rr=rp.risk_reward_ratio,
+                            signal_score=pending.signal.score,
+                            research_score=pending.research_score,
+                            daily_remaining=max(0, self._risk.daily_trades_remaining - 1),
+                        )
+                        trade_id = await self._portfolio.open_position({
+                            "symbol":             rp.symbol,
+                            "direction":          rp.direction,
+                            "entry_price":        rp.entry_price,
+                            "stop_loss":          rp.stop_loss,
+                            "take_profit":        rp.take_profit,
+                            "quantity":           rp.quantity,
+                            "leverage":           rp.leverage,
+                            "position_size_usdt": rp.position_size_usdt,
+                            "exchange":           self.exchange,
+                            "order_id":           pending.order_id,
+                            "signal_score":       pending.signal.score,
+                        })
+                        if trade_id:
+                            meta = self._make_position_meta(
+                                rp.entry_price,
+                                sl_order_id=sl_order_id,
+                                tp_order_id=tp_order_id,
+                            )
+                            meta["strategy_name"] = pending.strategy_name
+                            self._position_meta[symbol] = meta
+                            if pending.research_id:
+                                await self._coin_db.mark_research_executed(
+                                    pending.research_id, trade_id
+                                )
+                                self._pending_research_ids[symbol] = pending.research_id
+                            self._risk.update_open_trades(
+                                len(await self._portfolio.get_open_positions())
+                            )
+                        continue
+
+                    # ── Timeout check ──────────────────────────────────────
+                    if elapsed >= settings.limit_order_timeout_seconds:
+                        logger.info(
+                            "⏱ LIMIT order timed out ({:.0f}s): {} — cancelling",
+                            elapsed, symbol,
+                        )
+                        try:
+                            await executor.cancel_order(symbol, pending.order_id)
+                        except Exception as exc:
+                            logger.debug("Cancel timed-out order {}: {}", symbol, exc)
+
+                        del self._pending_entry_orders[symbol]
+
+                        if pending.retry_count < settings.limit_order_max_retries:
+                            await self._retry_limit_entry(pending)
+                        else:
+                            logger.info(
+                                "🚫 LIMIT entry abandoned after {} retries: {}",
+                                settings.limit_order_max_retries, symbol,
+                            )
+                            await self._alerts.send_text(
+                                f"⚠️ *{symbol}* limit entry abandoned\n"
+                                f"No fill after {settings.limit_order_max_retries + 1} "
+                                f"attempt(s). Bot will re-scan for a new setup."
+                            )
+
+            except Exception as exc:
+                logger.debug("Limit order monitor error: {}", exc)
+            await asyncio.sleep(10)
+
+    async def _retry_limit_entry(self, pending: PendingEntry) -> None:
+        """Re-place a LIMIT entry with a refreshed market price after a timeout."""
+        await self._sync_open_trades()
+        if not self._risk.can_open_trade():
+            logger.info("Limit retry skipped — trade limits reached: {}", pending.symbol)
+            return
+
+        live_ticker = self._cache.tickers.get(pending.symbol, {})
+        live_price = float(live_ticker.get("c", 0))
+        if live_price <= 0:
+            logger.debug("Limit retry skipped — no live price for {}", pending.symbol)
+            return
+
+        # Allow 3× the normal deviation tolerance for retries (price moves are expected)
+        if settings.entry_max_deviation_pct > 0:
+            dev_pct = (
+                abs(live_price - pending.risk_params.entry_price)
+                / pending.risk_params.entry_price * 100
+            )
+            if dev_pct > settings.entry_max_deviation_pct * 3:
+                logger.info(
+                    "{} limit retry aborted — price drifted {:.2f}% from signal",
+                    pending.symbol, dev_pct,
+                )
+                await self._alerts.send_text(
+                    f"⚠️ *{pending.symbol}* limit retry cancelled\n"
+                    f"Price drifted {dev_pct:.2f}% from signal price"
+                )
+                return
+
+        offset = settings.limit_entry_offset_pct / 100
+        rp = pending.risk_params
+        if rp.direction == "LONG":
+            limit_price = round(live_price * (1 - offset), 8)
+        else:
+            limit_price = round(live_price * (1 + offset), 8)
+
+        executor = self._bybit_exec if self.exchange == "bybit" else self._binance_exec
+        try:
+            if self.exchange == "bybit":
+                result = await executor.place_limit_order(
+                    pending.symbol,
+                    "Buy" if rp.direction == "LONG" else "Sell",
+                    rp.quantity, limit_price,
+                )
+                order_id = result.get("result", {}).get("orderId")
+            else:
+                result = await executor.place_limit_order(
+                    pending.symbol,
+                    "BUY" if rp.direction == "LONG" else "SELL",
+                    rp.quantity, limit_price,
+                )
+                order_id = result.get("orderId")
+        except Exception as exc:
+            logger.error("Limit retry placement failed {}: {}", pending.symbol, exc)
+            return
+
+        if not order_id:
+            logger.error("Limit retry rejected — no order_id for {}", pending.symbol)
+            return
+
+        attempt = pending.retry_count + 1
+        self._pending_entry_orders[pending.symbol] = PendingEntry(
+            symbol=pending.symbol,
+            order_id=str(order_id),
+            placed_at=time.time(),
+            risk_params=rp,
+            signal=pending.signal,
+            retry_count=attempt,
+            research_id=pending.research_id,
+            research_score=pending.research_score,
+            strategy_name=pending.strategy_name,
+        )
+        logger.info(
+            "🔄 LIMIT retry {}/{}: {} @ {:.6f}",
+            attempt, settings.limit_order_max_retries, pending.symbol, limit_price,
+        )
+        await self._alerts.send_text(
+            f"🔄 *{pending.symbol}* limit order re-placed\n"
+            f"Attempt {attempt}/{settings.limit_order_max_retries}\n"
+            f"New price: `{limit_price:.6f}` ({rp.direction})\n"
+            f"Cancels in {settings.limit_order_timeout_seconds}s if not filled"
+        )
 
     # ── Smart position management ──────────────────────────────────────────
 

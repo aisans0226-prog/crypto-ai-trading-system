@@ -200,6 +200,24 @@ class BinanceExecutor:
             logger.debug("get_recent_pnl Binance error {}: {}", symbol, exc)
         return 0.0
 
+    async def place_limit_order(
+        self, symbol: str, side: str, quantity: float, price: float
+    ) -> dict:
+        """Place a GTC LIMIT entry order."""
+        logger.info("Binance place LIMIT {} {} qty={} price={}", symbol, side, quantity, price)
+        return await self._post("/fapi/v1/order", {
+            "symbol": symbol,
+            "side": side,
+            "type": "LIMIT",
+            "price": round(price, 8),
+            "quantity": quantity,
+            "timeInForce": "GTC",
+        })
+
+    async def get_order_status(self, symbol: str, order_id: int) -> dict:
+        """Fetch current status of a specific order."""
+        return await self._get("/fapi/v1/order", {"symbol": symbol, "orderId": order_id})
+
     async def cancel_order(self, symbol: str, order_id) -> dict:
         """Cancel a specific open order by ID."""
         return await self._delete("/fapi/v1/order", {
@@ -376,6 +394,55 @@ class BybitExecutor:
         })
         if resp.get("retCode") != 0:
             logger.debug("Bybit cancel_order {}: {}", order_id, resp.get("retMsg"))
+        return resp
+
+    async def place_limit_order(
+        self, symbol: str, side: str, quantity: float, price: float
+    ) -> dict:
+        """Place a GTC LIMIT entry order."""
+        logger.info("Bybit place LIMIT {} {} qty={} price={}", symbol, side, quantity, price)
+        resp = await self._post("/v5/order/create", {
+            "category": "linear",
+            "symbol": symbol,
+            "side": side,           # "Buy" | "Sell"
+            "orderType": "Limit",
+            "qty": str(quantity),
+            "price": str(round(price, 8)),
+            "timeInForce": "GTC",
+        })
+        if resp.get("retCode") != 0:
+            logger.error("Bybit LIMIT order rejected {}: {}", symbol, resp.get("retMsg"))
+        return resp
+
+    async def get_order_status(self, symbol: str, order_id: str) -> dict:
+        """
+        Fetch current status of a specific order.
+        Tries active orders first; falls back to history for filled/cancelled orders.
+        """
+        resp = await self._get("/v5/order/realtime", {
+            "category": "linear", "symbol": symbol, "orderId": order_id,
+        })
+        if resp.get("result", {}).get("list"):
+            return resp
+        return await self._get("/v5/order/history", {
+            "category": "linear", "symbol": symbol, "orderId": order_id,
+        })
+
+    async def set_position_tp_sl(
+        self, symbol: str, stop_loss: float, take_profit: float
+    ) -> dict:
+        """Set / update both SL and TP on an open Bybit linear position."""
+        resp = await self._post("/v5/position/trading-stop", {
+            "category": "linear",
+            "symbol": symbol,
+            "stopLoss": str(stop_loss),
+            "takeProfit": str(take_profit),
+            "slTriggerBy": "LastPrice",
+            "tpTriggerBy": "LastPrice",
+            "positionIdx": 0,
+        })
+        if resp.get("retCode") != 0:
+            logger.error("Bybit set_position_tp_sl {}: {}", symbol, resp.get("retMsg"))
         return resp
 
     async def close_position_market(
