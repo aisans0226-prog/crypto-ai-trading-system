@@ -347,6 +347,25 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
 
 <!-- TRADES PAGE -->
 <div class="page" id="page-trades">
+  <!-- Pending LIMIT Entry Orders -->
+  <div class="card fw" id="pending-card" style="display:none">
+    <div class="ch">
+      <span class="ct2">⏳ Pending LIMIT Orders</span>
+      <span id="pending-count" class="sbg" style="font-size:.7rem">0 orders</span>
+    </div>
+    <div style="overflow-x:auto">
+      <table class="tbl">
+        <thead><tr>
+          <th>Symbol</th><th>Dir</th><th>Limit Price</th><th>SL</th><th>TP</th>
+          <th>Qty</th><th>Retry</th><th>Remaining</th><th>Status</th>
+        </tr></thead>
+        <tbody id="pending-tb">
+          <tr><td colspan="9" style="text-align:center;color:var(--mut);padding:18px">No pending orders</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
   <div class="card fw">
     <div class="ch">
       <span class="ct2">Open Positions</span>
@@ -668,6 +687,7 @@ function cwS(){
       var pg=document.querySelector('.page.active');
       if(pg&&pg.id==='page-trades')rPos(d.data.positions||{},d.data.exposure||null);
     }
+    if(d.type==='pending_orders') rPending(d.data.orders||[]);
     if(d.type==='system_update')toast(d.data.message||'Updated',d.data.success?'ok':'err');
   };
   ws.onclose=function(){
@@ -880,9 +900,45 @@ function rPos(pos, exp) {
   }).join(''):'<tr><td colspan="11" style="text-align:center;color:var(--mut);padding:18px">No open positions</td></tr>';
 }
 
+function rPending(orders){
+  var card=document.getElementById('pending-card');
+  var tb=document.getElementById('pending-tb');
+  var badge=document.getElementById('pending-count');
+  if(!card||!tb)return;
+  if(!orders||!orders.length){
+    card.style.display='none';
+    return;
+  }
+  card.style.display='';
+  if(badge)badge.textContent=orders.length+' order'+(orders.length>1?'s':'');
+  tb.innerHTML=orders.map(function(o){
+    var dir=(o.direction||'LONG').toLowerCase();
+    var pct=o.timeout_s>0?Math.round((o.remaining_s/o.timeout_s)*100):0;
+    var barCol=pct>50?'#10b981':pct>20?'#f59e0b':'#ff4466';
+    var bar='<div style="background:var(--card);border-radius:4px;height:6px;width:80px;overflow:hidden">'
+      +'<div style="background:'+barCol+';height:100%;width:'+pct+'%;transition:width 1s"></div></div>';
+    var timeStr=o.remaining_s>0
+      ?Math.floor(o.remaining_s/60)+'m '+Math.round(o.remaining_s%60)+'s'
+      :'<span style="color:#ff4466">Expiring…</span>';
+    return '<tr>'
+      +'<td class="tbls">'+o.symbol+'</td>'
+      +'<td><span class="sdir s'+dir+'">'+o.direction+'</span></td>'
+      +'<td style="font-weight:600">'+Number(o.limit_price).toFixed(4)+'</td>'
+      +'<td class="tn">'+Number(o.stop_loss).toFixed(4)+'</td>'
+      +'<td class="tp">'+Number(o.take_profit).toFixed(4)+'</td>'
+      +'<td>'+(o.quantity||'--')+'</td>'
+      +'<td style="color:var(--mut)">'+o.retry_count+'/'+o.max_retries+'</td>'
+      +'<td>'+bar+'<div style="font-size:.65rem;color:var(--mut);margin-top:2px">'+timeStr+'</div></td>'
+      +'<td><span class="sbg" style="background:rgba(245,158,11,.15);color:#f59e0b;font-size:.65rem">WAITING FILL</span></td>'
+      +'</tr>';
+  }).join('');
+}
+
 async function lTr(){
   var d=await ap('/api/portfolio');
   rPos(d.positions||{}, d.risk_exposure||{});
+  var pd=await ap('/api/pending-orders');
+  rPending(pd.pending_orders||[]);
 }
 
 async function lPf(){

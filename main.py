@@ -178,6 +178,7 @@ class TradingSystem:
         self._research = ResearchEngine(self._data_engine, self._coin_db)
         self._strategy_registry = StrategyRegistry(self._coin_db)
         state.strategy_registry = self._strategy_registry
+        state.pending_entry_orders = self._pending_entry_orders  # live dict ref — updated in-place
 
         # Fetch symbol list — may fail if exchange API is geo-blocked
         try:

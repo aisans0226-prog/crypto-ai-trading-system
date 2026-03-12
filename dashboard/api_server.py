@@ -37,6 +37,7 @@ class AppState:
     auto_updater = None
     coin_database = None          # CoinDatabase — per-coin learning stats
     strategy_registry = None      # StrategyRegistry — auto strategy discovery
+    pending_entry_orders: dict = {}   # symbol -> PendingEntry (LIMIT orders awaiting fill)
     recent_signals: List[dict] = []
     coin_rankings: List[dict] = []
     connected_ws: List[WebSocket] = []
@@ -125,6 +126,34 @@ async def get_metrics():
 @app.get("/api/signals")
 async def get_signals():
     return {"signals": state.recent_signals[-100:]}
+
+
+@app.get("/api/pending-orders")
+async def get_pending_orders():
+    """Return all pending LIMIT entry orders with elapsed/remaining time."""
+    import time as _time
+    now = _time.time()
+    from config import settings as _s
+    result = []
+    for sym, p in state.pending_entry_orders.items():
+        elapsed = now - p.placed_at
+        remaining = max(0.0, _s.limit_order_timeout_seconds - elapsed)
+        result.append({
+            "symbol":        p.symbol,
+            "order_id":      p.order_id,
+            "direction":     p.risk_params.direction,
+            "limit_price":   p.risk_params.entry_price,
+            "stop_loss":     p.risk_params.stop_loss,
+            "take_profit":   p.risk_params.take_profit,
+            "quantity":      p.risk_params.quantity,
+            "retry_count":   p.retry_count,
+            "max_retries":   _s.limit_order_max_retries,
+            "elapsed_s":     round(elapsed, 1),
+            "remaining_s":   round(remaining, 1),
+            "timeout_s":     _s.limit_order_timeout_seconds,
+            "placed_at":     p.placed_at,
+        })
+    return {"pending_orders": result, "count": len(result)}
 
 
 @app.get("/api/heatmap")
@@ -497,7 +526,8 @@ async def save_ai_config(request: Request):
 
 
 async def _realtime_loop() -> None:
-    """Push metrics + enriched positions to all connected WS clients every 5 seconds."""
+    """Push metrics + enriched positions + pending orders to all connected WS clients every 5 seconds."""
+    import time as _time
     while True:
         await asyncio.sleep(5)
         if not state.connected_ws or not state.portfolio_manager:
@@ -510,6 +540,31 @@ async def _realtime_loop() -> None:
             await _enrich_positions(positions)
             exposure  = await state.portfolio_manager.get_risk_exposure()
             await broadcast("positions", {"positions": positions, "exposure": exposure})
+
+            # Broadcast pending LIMIT entry orders so dashboard can show countdown
+            if state.pending_entry_orders:
+                from config import settings as _s
+                now = _time.time()
+                pending_list = []
+                for sym, p in state.pending_entry_orders.items():
+                    elapsed   = now - p.placed_at
+                    remaining = max(0.0, _s.limit_order_timeout_seconds - elapsed)
+                    pending_list.append({
+                        "symbol":      p.symbol,
+                        "order_id":    p.order_id,
+                        "direction":   p.risk_params.direction,
+                        "limit_price": p.risk_params.entry_price,
+                        "stop_loss":   p.risk_params.stop_loss,
+                        "take_profit": p.risk_params.take_profit,
+                        "retry_count": p.retry_count,
+                        "max_retries": _s.limit_order_max_retries,
+                        "elapsed_s":   round(elapsed, 1),
+                        "remaining_s": round(remaining, 1),
+                        "timeout_s":   _s.limit_order_timeout_seconds,
+                    })
+                await broadcast("pending_orders", {"orders": pending_list})
+            else:
+                await broadcast("pending_orders", {"orders": []})
         except Exception as exc:
             logger.warning("Realtime broadcast error: {}", exc)
 
