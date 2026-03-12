@@ -41,6 +41,14 @@ class AppState:
     recent_signals: List[dict] = []
     coin_rankings: List[dict] = []
     connected_ws: List[WebSocket] = []
+    # Bot operational state — updated by main.py scan loop
+    bot_stats: dict = {
+        "last_scan_ts": None,
+        "watchlist_count": 0,
+        "daily_trades_today": 0,
+        "scan_cycle": 0,
+        "started_at": None,
+    }
 
 
 state = AppState()
@@ -124,6 +132,128 @@ async def get_metrics():
             "total_pnl": 0.0, "balance": settings.account_balance_usdt, "pnl_trend": [],
         }
     return await state.portfolio_manager.calculate_metrics()
+
+
+@app.get("/api/advanced-stats")
+async def get_advanced_stats():
+    """Extended analytics: avg duration, best/worst trade, monthly PnL, PnL by symbol/weekday."""
+    empty = {
+        "avg_duration_hours": 0.0, "best_trade_pnl": 0.0, "worst_trade_pnl": 0.0,
+        "avg_pnl_per_trade": 0.0, "avg_signal_score": 0.0,
+        "current_win_streak": 0, "current_loss_streak": 0,
+        "monthly_pnl": [], "pnl_by_weekday": [], "pnl_by_symbol": [],
+    }
+    if not state.portfolio_manager:
+        return empty
+    from sqlalchemy import select, func
+    from portfolio.portfolio_manager import TradeRecord
+    async with state.portfolio_manager._session_factory() as session:
+        result = await session.execute(
+            select(TradeRecord)
+            .where(TradeRecord.status == "closed")
+            .order_by(TradeRecord.closed_at.asc())
+        )
+        trades = result.scalars().all()
+
+    if not trades:
+        return empty
+
+    # --- Avg duration ---
+    durations = []
+    for t in trades:
+        if t.opened_at and t.closed_at:
+            durations.append((t.closed_at - t.opened_at).total_seconds() / 3600)
+    avg_dur = round(sum(durations) / len(durations), 2) if durations else 0.0
+
+    # --- PnL stats ---
+    pnls = [t.pnl_usdt or 0 for t in trades]
+    best  = round(max(pnls), 2) if pnls else 0.0
+    worst = round(min(pnls), 2) if pnls else 0.0
+    avg_p = round(sum(pnls) / len(pnls), 2) if pnls else 0.0
+
+    # --- Avg signal score ---
+    scores = [t.signal_score for t in trades if t.signal_score is not None]
+    avg_sc = round(sum(scores) / len(scores), 1) if scores else 0.0
+
+    # --- Win/loss streak (from latest) ---
+    win_streak = loss_streak = 0
+    for t in reversed(trades):
+        p = t.pnl_usdt or 0
+        if win_streak == 0 and loss_streak == 0:
+            if p > 0: win_streak = 1
+            else:     loss_streak = 1
+        elif win_streak > 0:
+            if p > 0: win_streak += 1
+            else:     break
+        else:
+            if p <= 0: loss_streak += 1
+            else:      break
+
+    # --- Monthly PnL (last 12 months) ---
+    from collections import defaultdict
+    monthly: dict = defaultdict(float)
+    for t in trades:
+        if t.closed_at:
+            key = t.closed_at.strftime("%Y-%m")
+            monthly[key] += t.pnl_usdt or 0
+    monthly_list = [{"month": k, "pnl": round(v, 2)} for k, v in sorted(monthly.items())[-12:]]
+
+    # --- PnL by weekday (0=Mon…6=Sun) ---
+    wd_pnl: dict = defaultdict(float)
+    wd_count: dict = defaultdict(int)
+    for t in trades:
+        if t.closed_at:
+            wd = t.closed_at.weekday()
+            wd_pnl[wd] += t.pnl_usdt or 0
+            wd_count[wd] += 1
+    wd_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    pnl_by_wd = [{"day": wd_labels[i], "pnl": round(wd_pnl.get(i, 0), 2), "count": wd_count.get(i, 0)} for i in range(7)]
+
+    # --- PnL by symbol (top 15) ---
+    sym_pnl: dict = defaultdict(float)
+    sym_cnt: dict = defaultdict(int)
+    for t in trades:
+        sym_pnl[t.symbol] += t.pnl_usdt or 0
+        sym_cnt[t.symbol] += 1
+    pnl_by_sym = sorted(
+        [{"symbol": s, "pnl": round(p, 2), "trades": sym_cnt[s]} for s, p in sym_pnl.items()],
+        key=lambda x: x["pnl"], reverse=True
+    )[:15]
+
+    return {
+        "avg_duration_hours":  avg_dur,
+        "best_trade_pnl":      best,
+        "worst_trade_pnl":     worst,
+        "avg_pnl_per_trade":   avg_p,
+        "avg_signal_score":    avg_sc,
+        "current_win_streak":  win_streak,
+        "current_loss_streak": loss_streak,
+        "monthly_pnl":         monthly_list,
+        "pnl_by_weekday":      pnl_by_wd,
+        "pnl_by_symbol":       pnl_by_sym,
+    }
+
+
+@app.get("/api/bot-status")
+async def get_bot_status():
+    """Real-time bot operational status and configuration snapshot."""
+    from config import settings as _s
+    import time as _t
+    started = state.bot_stats.get("started_at")
+    uptime_s = round(_t.time() - started, 0) if started else 0
+    return {
+        "last_scan_ts":      state.bot_stats.get("last_scan_ts"),
+        "watchlist_count":   state.bot_stats.get("watchlist_count", 0),
+        "daily_trades_today": state.bot_stats.get("daily_trades_today", 0),
+        "scan_cycle":        state.bot_stats.get("scan_cycle", 0),
+        "uptime_seconds":    uptime_s,
+        "signals_in_memory": len(state.recent_signals),
+        "ws_clients":        len(state.connected_ws),
+        "training_mode":     getattr(_s, "training_mode", False),
+        "score_threshold":   getattr(_s, "effective_signal_score_threshold", _s.signal_score_threshold),
+        "max_daily_trades":  getattr(_s, "effective_max_daily_trades", _s.max_daily_trades),
+        "dry_run":           getattr(_s, "dry_run", True),
+    }
 
 
 @app.get("/api/signals")
@@ -251,6 +381,7 @@ async def get_trades(limit: int = 100, status: str = "all"):
             "status":       t.status,
             "exchange":     t.exchange,
             "signal_score": t.signal_score,
+            "strategy":     getattr(t, "strategy_name", None),
             "opened_at":    t.opened_at.isoformat() if t.opened_at else None,
             "closed_at":    t.closed_at.isoformat() if t.closed_at else None,
         }
