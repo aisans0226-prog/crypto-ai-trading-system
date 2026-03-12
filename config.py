@@ -126,5 +126,62 @@ class Settings(BaseSettings):
     # Auto Strategy Discovery
     strategy_discovery_enabled: bool = True  # if False, falls back to first-match (legacy)
 
+    # ── Training Mode ─────────────────────────────────────────────────────────
+    # Set TRAINING_MODE=true in .env to maximise trade frequency and collect ML data.
+    # ALL thresholds are relaxed — intended for use with --dry-run.
+    # Production rules are restored automatically when training_mode=False.
+    training_mode: bool = False
+
+    # ── Effective thresholds (auto-relaxed in training mode) ──────────────────
+    @property
+    def effective_signal_score_threshold(self) -> int:
+        """Gate score after ML+sentiment boost. In training mode: accept score ≥ 3."""
+        return 3 if self.training_mode else self.signal_score_threshold
+
+    @property
+    def effective_watchlist_confirmations(self) -> int:
+        """Scan cycles before deep research. In training mode: 1 cycle only."""
+        return 1 if self.training_mode else self.watchlist_confirmations
+
+    @property
+    def effective_signal_cooldown_minutes(self) -> int:
+        """Cooldown after watchlist decision. In training mode: 5 min."""
+        return 5 if self.training_mode else self.signal_cooldown_minutes
+
+    @property
+    def effective_research_min_score(self) -> float:
+        """Research score gate (0–10). In training mode: 2.0 (nearly always passes)."""
+        return 2.0 if self.training_mode else self.research_min_score
+
+    @property
+    def effective_research_min_mtf_alignment(self) -> float:
+        """Fraction of TFs that must agree. In training mode: 0.0 (no gate)."""
+        return 0.0 if self.training_mode else self.research_min_mtf_alignment
+
+    @property
+    def effective_min_ml_confidence(self) -> float:
+        """Min ML confidence gate. In training mode: 0.0 (bypass — model not trained yet)."""
+        return 0.0 if self.training_mode else self.min_ml_confidence
+
+    @property
+    def effective_max_daily_trades(self) -> int:
+        """Max trades per day. In training mode: 100 (effectively unlimited)."""
+        return 100 if self.training_mode else self.max_daily_trades
+
+    @property
+    def effective_max_open_trades(self) -> int:
+        """Max simultaneous open positions. In training mode: 20."""
+        return 20 if self.training_mode else self.max_open_trades
+
+    @property
+    def effective_max_position_hold_hours(self) -> float:
+        """Force-close after N hours. In training mode: 4h to cycle data faster."""
+        return 4.0 if self.training_mode else self.max_position_hold_hours
+
+    @property
+    def effective_min_volume_usdt(self) -> float:
+        """Minimum 24h volume filter. In training mode: 200k (more coins eligible)."""
+        return 200_000.0 if self.training_mode else self.min_volume_usdt
+
 
 settings = Settings()

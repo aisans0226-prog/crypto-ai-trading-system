@@ -1,9 +1,11 @@
 """
 data_engine/coin_database.py — Per-coin self-learning research database.
 
-Two tables:
-  coin_stats     — tracks win rate, avg signal score, trade frequency per coin
-  research_log   — logs every deep-research decision and its eventual outcome
+Tables:
+  coin_stats          — tracks win rate, avg signal score, trade frequency per coin
+  research_log        — logs every deep-research decision and its eventual outcome
+  strategy_stats      — per-strategy win-rate and PnL tracking
+  ml_training_samples — XGBoost feature vectors + labels (replaces training_samples.pkl)
 
 The system populates these tables automatically as it scans and trades,
 building a growing knowledge base used by ResearchEngine to bias future
@@ -11,11 +13,12 @@ decisions toward historically profitable setups.
 """
 import json
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
+import numpy as np
 from loguru import logger
 from sqlalchemy import (
-    Column, Integer, String, Float, DateTime, Boolean,
+    Column, Integer, String, Float, DateTime, Boolean, Text,
     select, update, func,
 )
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
@@ -74,6 +77,21 @@ class StrategyStats(Base):
     avg_pnl          = Column(Float,   default=0.0)   # rolling average PnL per trade
     recent_pnl_json  = Column(String(500), default="[]")  # JSON list of last 10 PnL values
     updated_at       = Column(DateTime, default=datetime.utcnow)
+
+
+class MLTrainingSample(Base):
+    """One row per trade signal that reached ML prediction stage.
+    label=NULL means trade is still open (pending); 0=loss, 1=win after close.
+    Replaces training_samples.pkl — data survives VPS resets and bot restarts.
+    """
+    __tablename__ = "ml_training_samples"
+
+    id         = Column(Integer,  primary_key=True, autoincrement=True)
+    trade_id   = Column(String(80), unique=True, nullable=False, index=True)
+    symbol     = Column(String(20), nullable=False, index=True)
+    features   = Column(Text,     nullable=False)   # JSON-encoded float32 list
+    label      = Column(Integer,  nullable=True)    # None=pending, 0=loss, 1=win
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -338,3 +356,92 @@ class CoinDatabase:
                 "updated_at":   r.updated_at.isoformat() if r.updated_at else None,
             })
         return out
+
+    # ── ML training samples ────────────────────────────────────────────────
+    async def save_ml_sample(self, trade_id: str, symbol: str, features: list) -> None:
+        """Persist a pending feature vector when ML prediction fires.
+        Call this as a background task from record_prediction().
+        """
+        async with self._sf() as session:
+            # Upsert: ignore if trade_id already exists (idempotent)
+            existing = await session.execute(
+                select(MLTrainingSample).where(MLTrainingSample.trade_id == trade_id)
+            )
+            if existing.scalar_one_or_none() is None:
+                session.add(MLTrainingSample(
+                    trade_id=trade_id,
+                    symbol=symbol,
+                    features=json.dumps([float(v) for v in features]),
+                ))
+                await session.commit()
+
+    async def label_ml_sample(self, trade_id: str, label: int) -> None:
+        """Set win(1)/loss(0) label once trade closes.
+        Call this as a background task from label_trade().
+        """
+        async with self._sf() as session:
+            await session.execute(
+                update(MLTrainingSample)
+                .where(MLTrainingSample.trade_id == trade_id)
+                .values(label=label)
+            )
+            await session.commit()
+
+    async def load_ml_samples(self) -> Tuple[List[np.ndarray], List[int], Dict[str, dict]]:
+        """Return (X_list, y_list, coin_stats) for ALL labeled samples.
+        Used by SelfLearningEngine.initialize() to restore state on startup.
+        """
+        async with self._sf() as session:
+            result = await session.execute(
+                select(MLTrainingSample)
+                .where(MLTrainingSample.label.isnot(None))
+                .order_by(MLTrainingSample.id.asc())
+            )
+            rows = result.scalars().all()
+
+        X, y, coin_stats = [], [], {}
+        for r in rows:
+            try:
+                fvec = np.array(json.loads(r.features), dtype=np.float32)
+                X.append(fvec)
+                y.append(int(r.label))
+                stat = coin_stats.setdefault(r.symbol, {"wins": 0, "losses": 0, "total": 0})
+                stat["total"] += 1
+                if r.label == 1:
+                    stat["wins"] += 1
+                else:
+                    stat["losses"] += 1
+            except Exception as exc:
+                logger.debug("load_ml_samples: skip row {}, error: {}", r.id, exc)
+
+        for stat in coin_stats.values():
+            stat["win_rate"] = stat["wins"] / stat["total"] if stat["total"] > 0 else 0.5
+
+        logger.info("load_ml_samples: {} labeled samples, {} coins", len(y), len(coin_stats))
+        return X, y, coin_stats
+
+    async def load_pending_ml_samples(self) -> Dict[str, dict]:
+        """Return {trade_id: {symbol, features}} for unlabeled (open-trade) samples.
+        Used on startup to restore _pending dict so in-flight trades can still be labeled.
+        """
+        async with self._sf() as session:
+            result = await session.execute(
+                select(MLTrainingSample).where(MLTrainingSample.label.is_(None))
+            )
+            rows = result.scalars().all()
+
+        pending = {}
+        for r in rows:
+            try:
+                fvec = np.array(json.loads(r.features), dtype=np.float32)
+                pending[r.trade_id] = {
+                    "symbol":   r.symbol,
+                    "features": fvec,
+                    "ts":       r.created_at.isoformat() if r.created_at else "",
+                }
+            except Exception as exc:
+                logger.debug("load_pending_ml_samples: skip row {}: {}", r.id, exc)
+
+        if pending:
+            logger.info("load_pending_ml_samples: recovered {} pending predictions", len(pending))
+        return pending

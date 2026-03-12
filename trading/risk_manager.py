@@ -72,28 +72,29 @@ class RiskManager:
     def daily_loss_exceeded(self) -> bool:
         """True when today's realized loss has hit the configured limit."""
         self._reset_daily_if_needed()
-        if settings.max_daily_loss_pct <= 0:
+        max_loss_pct = 0.0 if settings.training_mode else settings.max_daily_loss_pct
+        if max_loss_pct <= 0:
             return False
-        loss_limit = self._account_balance * (settings.max_daily_loss_pct / 100.0)
+        loss_limit = self._account_balance * (max_loss_pct / 100.0)
         return self._daily_pnl <= -loss_limit
 
     @property
     def daily_trades_remaining(self) -> int:
         self._reset_daily_if_needed()
-        return max(0, settings.max_daily_trades - self._daily_trades)
+        return max(0, settings.effective_max_daily_trades - self._daily_trades)
 
     def can_open_trade(self) -> bool:
         self._reset_daily_if_needed()
-        if self._open_trades >= settings.max_open_trades:
+        if self._open_trades >= settings.effective_max_open_trades:
             logger.warning(
                 "Max open trades reached ({}/{})",
-                self._open_trades, settings.max_open_trades,
+                self._open_trades, settings.effective_max_open_trades,
             )
             return False
-        if self._daily_trades >= settings.max_daily_trades:
+        if self._daily_trades >= settings.effective_max_daily_trades:
             logger.warning(
                 "Daily trade limit reached ({}/{}). Resuming tomorrow.",
-                self._daily_trades, settings.max_daily_trades,
+                self._daily_trades, settings.effective_max_daily_trades,
             )
             return False
         if self.daily_loss_exceeded:

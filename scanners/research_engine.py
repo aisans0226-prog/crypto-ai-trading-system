@@ -87,8 +87,8 @@ class ResearchEngine:
             (reasons if bonus >= 0 else failed).append(tag)
 
         passed = (
-            score >= settings.research_min_score
-            and mtf_alignment >= settings.research_min_mtf_alignment
+            score >= settings.effective_research_min_score
+            and mtf_alignment >= settings.effective_research_min_mtf_alignment
         )
 
         # ── LLM analysis (only active when ai_analysis_enabled=True) ─────────
@@ -116,8 +116,8 @@ class ResearchEngine:
                         reasons.append(tag)
                         # Re-evaluate pass with adjusted score
                         passed = (
-                            score >= settings.research_min_score
-                            and mtf_alignment >= settings.research_min_mtf_alignment
+                            score >= settings.effective_research_min_score
+                            and mtf_alignment >= settings.effective_research_min_mtf_alignment
                         )
             except Exception as exc:
                 logger.debug("LLM research integration error: {}", exc)

@@ -18,6 +18,7 @@ FILES = [
     "dashboard/api_server.py",
     "dashboard/dashboard.html",
     "data_engine/coin_database.py",
+    "ml_models/self_learning.py",
     "strategy/trend_strategy.py",
     "strategy/breakout_strategy.py",
     "strategy/liquidity_strategy.py",
@@ -52,6 +53,7 @@ def main():
     # Ensure required subdirectories exist on VPS
     run(ssh, f'mkdir -p "{REMOTE_ROOT}/ai_engine"')
     run(ssh, f'mkdir -p "{REMOTE_ROOT}/strategy"')
+    run(ssh, f'mkdir -p "{REMOTE_ROOT}/ml_models"')
     log_lines.append("subdirs ensured on VPS")
 
     # Upload files via SFTP

@@ -30,7 +30,7 @@ class SignalResult:
 
     @property
     def is_high_probability(self) -> bool:
-        return self.score >= settings.signal_score_threshold
+        return self.score >= settings.effective_signal_score_threshold
 
 
 class MarketScanner:
@@ -63,7 +63,7 @@ class MarketScanner:
         high_volume = {
             t["symbol"]
             for t in tickers
-            if float(t.get("quoteVolume", 0)) >= settings.min_volume_usdt
+            if float(t.get("quoteVolume", 0)) >= settings.effective_min_volume_usdt
         }
         symbols = [s for s in symbols if s in high_volume]
         logger.info("Symbols after volume filter: {}", len(symbols))

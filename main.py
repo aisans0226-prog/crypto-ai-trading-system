@@ -171,6 +171,7 @@ class TradingSystem:
         await self._data_engine.start()
         await self._portfolio.start()
         await self._coin_db.start()
+        await self._learner.initialize(self._coin_db)   # load ML training data from PostgreSQL
         await self._alerts.start()
         self._alerts.set_command_handler(self._handle_telegram_command)
         await self._sentiment.start()
@@ -203,12 +204,34 @@ class TradingSystem:
         self._cache.register_callback(self._on_ws_event)
 
         logger.info("System ready — scanning {} coins", len(symbols))
-        await self._alerts.send_text(
+        online_msg = (
             f"🟢 Trading system ONLINE\n"
             f"Exchange: {self.exchange.upper()}\n"
             f"Dry run: {self.dry_run}\n"
             f"Scanning: {len(symbols)} coins"
         )
+        if settings.training_mode:
+            online_msg += (
+                "\n\n⚠️ *TRAINING MODE ACTIVE*\n"
+                f"Score gate: ≥{settings.effective_signal_score_threshold} "
+                f"(normal={settings.signal_score_threshold})\n"
+                f"Max daily trades: {settings.effective_max_daily_trades}\n"
+                f"Max open: {settings.effective_max_open_trades}\n"
+                f"Hold limit: {settings.effective_max_position_hold_hours}h\n"
+                "All thresholds relaxed for ML data collection."
+            )
+            logger.warning(
+                "⚠️  TRAINING MODE — relaxed thresholds: score≥{} confirmations={} "
+                "cooldown={}min daily_max={} open_max={} hold={}h volume≥{}",
+                settings.effective_signal_score_threshold,
+                settings.effective_watchlist_confirmations,
+                settings.effective_signal_cooldown_minutes,
+                settings.effective_max_daily_trades,
+                settings.effective_max_open_trades,
+                settings.effective_max_position_hold_hours,
+                settings.effective_min_volume_usdt,
+            )
+        await self._alerts.send_text(online_msg)
 
         # Run all async tasks
         await asyncio.gather(
@@ -341,14 +364,14 @@ class TradingSystem:
                     # Pre-filter: skip only signals that can't reach threshold even with
                     # max ML (+3) + sentiment (+1) boost. This allows scanner scores of
                     # (threshold - 4) or above to proceed to ML/sentiment evaluation.
-                    pre_filter_score = max(0, settings.signal_score_threshold - 4)
+                    pre_filter_score = max(0, settings.effective_signal_score_threshold - 4)
                     if signal.score < pre_filter_score:
                         continue
 
                     # Cooldown applies only when adding NEW entries to watchlist
                     in_watchlist = signal.symbol in self._watchlist
                     if not in_watchlist:
-                        cooldown_secs = settings.signal_cooldown_minutes * 60
+                        cooldown_secs = settings.effective_signal_cooldown_minutes * 60
                         if now - self._signal_cooldowns.get(signal.symbol, 0) < cooldown_secs:
                             continue
 
@@ -387,10 +410,10 @@ class TradingSystem:
 
                     # ML confidence gate — only enforced when model is trained (not default 0.5)
                     ml_trained = abs(signal.ai_prediction - 0.5) > 0.05
-                    if ml_trained and signal.ai_prediction < settings.min_ml_confidence:
+                    if ml_trained and signal.ai_prediction < settings.effective_min_ml_confidence:
                         logger.debug(
                             "{} ML confidence {:.2f} < gate {:.2f} — skip",
-                            signal.symbol, signal.ai_prediction, settings.min_ml_confidence,
+                            signal.symbol, signal.ai_prediction, settings.effective_min_ml_confidence,
                         )
                         continue
 
@@ -423,7 +446,7 @@ class TradingSystem:
                             signal=signal, first_seen=now
                         )
                         await self._alerts.send_watchlist_alert(
-                            signal, settings.watchlist_confirmations
+                            signal, settings.effective_watchlist_confirmations
                         )
                         await broadcast("signal", {
                             "symbol": signal.symbol, "score": signal.score,
@@ -431,7 +454,7 @@ class TradingSystem:
                         })
                         logger.info(
                             "📡 Watchlist add: {} | score={} | needs {} more scan(s)",
-                            signal.symbol, signal.score, settings.watchlist_confirmations,
+                            signal.symbol, signal.score, settings.effective_watchlist_confirmations,
                         )
                     else:
                         # ── Stage 2: Increment confirmation count ──────────
@@ -441,10 +464,10 @@ class TradingSystem:
                         logger.info(
                             "📡 Watchlist confirm: {} | {}/{} | score={}",
                             signal.symbol, entry.confirmations,
-                            settings.watchlist_confirmations, signal.score,
+                            settings.effective_watchlist_confirmations, signal.score,
                         )
 
-                        if entry.confirmations >= settings.watchlist_confirmations:
+                        if entry.confirmations >= settings.effective_watchlist_confirmations:
                             # ── Stage 3: Deep research ─────────────────────
                             logger.info(
                                 "🔬 Research start: {} | score={}", signal.symbol, signal.score
@@ -866,7 +889,20 @@ class TradingSystem:
         for symbol, pos_data in list(portfolio_positions.items()):
             try:
                 ticker = self._cache.tickers.get(symbol, {})
-                current_price = float(ticker.get("c", pos_data.get("entry_price", 0)))
+                current_price = float(ticker.get("c", 0))
+
+                # WS ticker cache miss — fall back to klines last close, then REST
+                if current_price <= 0:
+                    df = self._klines_cache.get(symbol)
+                    if df is not None and len(df) > 0:
+                        current_price = float(df["close"].iloc[-1])
+                if current_price <= 0:
+                    try:
+                        kl = await self._data_engine.get_klines_binance(symbol, "1m", 2)
+                        current_price = float(kl["close"].iloc[-1])
+                        self._klines_cache[symbol] = kl   # prime cache for next cycle
+                    except Exception:
+                        pass
                 if current_price <= 0:
                     continue
 
@@ -1210,7 +1246,15 @@ class TradingSystem:
         """
         meta = self._position_meta.get(symbol)
         if not meta:
-            return
+            # Auto-recover after restart: rebuild meta from pos_data so smart-exit
+            # rules (trailing, breakeven, time-limit, reversal) resume immediately.
+            # opened_at from DB preserves the real hold-time; falls back to now.
+            meta = self._make_position_meta(float(pos_data.get("entry_price", 0)))
+            if pos_data.get("opened_at"):
+                meta["opened_at"] = pos_data["opened_at"]
+            self._position_meta[symbol] = meta
+            logger.info("Recovered position meta for {} after restart (opened_at={})",
+                        symbol, datetime.utcfromtimestamp(meta["opened_at"]).strftime("%H:%M"))
 
         direction  = pos_data.get("direction", "LONG")
         entry      = float(pos_data.get("entry_price", 0))
@@ -1234,7 +1278,7 @@ class TradingSystem:
         hours_open = (time.time() - meta.get("opened_at", time.time())) / 3600
 
         # ── 1. Time-based force-exit ───────────────────────────────────────
-        max_h = settings.max_position_hold_hours
+        max_h = settings.effective_max_position_hold_hours
         if max_h > 0 and hours_open >= max_h:
             await self._force_close(
                 symbol, pos_data, executor, current_price,
