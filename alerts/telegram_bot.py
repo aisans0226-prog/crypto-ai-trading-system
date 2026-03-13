@@ -4,12 +4,17 @@ alerts/telegram_bot.py — Real-time trade alerts via Telegram and Discord.
 import asyncio
 import html
 import time
+from collections import deque
 from typing import Optional, Callable, Awaitable
 import aiohttp
 from loguru import logger
 
 from config import settings
 from scanners.market_scanner import SignalResult
+
+# Hard cap: never send more than this many messages per 60-second window.
+# Telegram ban threshold is ~30/min; we stay well below it.
+_MAX_MSGS_PER_MINUTE = 20
 
 
 TELEGRAM_API = "https://api.telegram.org"
@@ -28,6 +33,8 @@ class AlertSystem:
         self._poll_task: Optional[asyncio.Task] = None
         self._muted: bool = False           # suppress all outgoing messages when True
         self._tg_rate_limit_until: float = 0.0  # Unix timestamp when rate limit expires
+        # Sliding-window rate governor: tracks timestamps of recent sends
+        self._msg_times: deque = deque()
 
     @property
     def is_muted(self) -> bool:
@@ -118,6 +125,9 @@ class AlertSystem:
 
     async def send_watchlist_alert(self, signal: SignalResult, confirmations_needed: int) -> None:
         """Stage 1: signal detected, added to watchlist for monitoring."""
+        # Training mode floods hundreds of watchlist adds per cycle — skip to avoid Telegram 429 ban.
+        if settings.training_mode:
+            return
         msg = (
             f"🔍 <b>SIGNAL DETECTED — Monitoring</b>\n\n"
             f"Coin: <code>{self._esc(signal.symbol)}</code>\n"
@@ -136,6 +146,9 @@ class AlertSystem:
 
     async def send_research_result(self, signal: SignalResult, result) -> None:
         """Stage 2: deep research completed — passed or failed."""
+        # In training mode suppress failed-research noise; only passed (entry about to happen) matters.
+        if settings.training_mode and not result.passed:
+            return
         if result.passed:
             ok_lines = "\n".join(f"  ✅ {self._esc(r)}" for r in result.reasons[:6])
             header = "📊 <b>RESEARCH PASSED</b> ✅ — Entering trade"
@@ -231,6 +244,14 @@ class AlertSystem:
                 logger.warning("Telegram rate-limited — {} s remaining", remaining)
             return
         url = f"{TELEGRAM_API}/bot{settings.telegram_bot_token}/sendMessage"
+        # Sliding-window rate governor: drop message if we're already at the cap.
+        now = time.time()
+        while self._msg_times and now - self._msg_times[0] > 60:
+            self._msg_times.popleft()
+        if len(self._msg_times) >= _MAX_MSGS_PER_MINUTE:
+            logger.debug("Telegram rate governor: {} msgs/60s cap reached — message dropped", _MAX_MSGS_PER_MINUTE)
+            return
+        self._msg_times.append(now)
         payload = {
             "chat_id": settings.telegram_chat_id,
             "text": text,
