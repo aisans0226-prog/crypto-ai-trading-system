@@ -201,6 +201,10 @@ async def get_advanced_stats():
         "avg_pnl_per_trade": 0.0, "avg_signal_score": 0.0,
         "current_win_streak": 0, "current_loss_streak": 0,
         "monthly_pnl": [], "pnl_by_weekday": [], "pnl_by_symbol": [],
+        # Enhanced analytics
+        "avg_win_usdt": 0.0, "avg_loss_usdt": 0.0, "expected_value": 0.0,
+        "sharpe_ratio": 0.0, "pnl_by_hour": [], "score_distribution": [],
+        "total_wins": 0, "total_losses": 0, "gross_profit": 0.0, "gross_loss": 0.0,
     }
     if not state.portfolio_manager:
         return empty
@@ -268,28 +272,98 @@ async def get_advanced_stats():
     wd_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     pnl_by_wd = [{"day": wd_labels[i], "pnl": round(wd_pnl.get(i, 0), 2), "count": wd_count.get(i, 0)} for i in range(7)]
 
-    # --- PnL by symbol (top 15) ---
+    # --- PnL by symbol (top 15) with per-symbol win rate ---
     sym_pnl: dict = defaultdict(float)
     sym_cnt: dict = defaultdict(int)
+    sym_win: dict = defaultdict(int)
     for t in trades:
         sym_pnl[t.symbol] += t.pnl_usdt or 0
         sym_cnt[t.symbol] += 1
+        if (t.pnl_usdt or 0) > 0:
+            sym_win[t.symbol] += 1
     pnl_by_sym = sorted(
-        [{"symbol": s, "pnl": round(p, 2), "trades": sym_cnt[s]} for s, p in sym_pnl.items()],
+        [{"symbol": s, "pnl": round(p, 2), "trades": sym_cnt[s],
+          "win_rate": round(sym_win[s] / sym_cnt[s] * 100, 1) if sym_cnt[s] else 0.0}
+         for s, p in sym_pnl.items()],
         key=lambda x: x["pnl"], reverse=True
     )[:15]
 
+    # --- Avg win / loss ---
+    win_pnls  = [p for p in pnls if p > 0]
+    loss_pnls = [p for p in pnls if p <= 0]
+    avg_win   = round(sum(win_pnls) / len(win_pnls), 2)   if win_pnls  else 0.0
+    avg_loss  = round(sum(loss_pnls) / len(loss_pnls), 2) if loss_pnls else 0.0
+    gross_profit = round(sum(win_pnls), 2)
+    gross_loss   = round(sum(loss_pnls), 2)
+
+    # --- Expected Value per trade ---
+    total_c = len(pnls)
+    wr_frac  = len(win_pnls) / total_c if total_c else 0.0
+    lr_frac  = len(loss_pnls) / total_c if total_c else 0.0
+    ev = round(wr_frac * avg_win + lr_frac * avg_loss, 2)
+
+    # --- Sharpe Ratio (simplified: annualised per-trade std) ---
+    import statistics as _stats
+    sharpe = 0.0
+    if len(pnls) >= 3:
+        mu  = sum(pnls) / len(pnls)
+        std = _stats.stdev(pnls) or 1e-9
+        sharpe = round(mu / std * (len(pnls) ** 0.5), 3)
+
+    # --- PnL by hour of day (0–23, UTC) ---
+    hr_pnl: dict = defaultdict(float)
+    hr_cnt: dict = defaultdict(int)
+    for t in trades:
+        if t.closed_at:
+            hr_pnl[t.closed_at.hour] += t.pnl_usdt or 0
+            hr_cnt[t.closed_at.hour] += 1
+    pnl_by_hour = [
+        {"hour": i, "pnl": round(hr_pnl.get(i, 0), 2), "count": hr_cnt.get(i, 0)}
+        for i in range(24)
+    ]
+
+    # --- Score distribution: win rate per signal-score bucket ---
+    sc_bkts: dict = {"<7": {"wins": 0, "total": 0}, "7–9": {"wins": 0, "total": 0},
+                     "9–11": {"wins": 0, "total": 0}, "11–13": {"wins": 0, "total": 0},
+                     "13+": {"wins": 0, "total": 0}}
+    for t in trades:
+        sc = t.signal_score or 0
+        if   sc < 7:  k = "<7"
+        elif sc < 9:  k = "7–9"
+        elif sc < 11: k = "9–11"
+        elif sc < 13: k = "11–13"
+        else:         k = "13+"
+        sc_bkts[k]["total"] += 1
+        if (t.pnl_usdt or 0) > 0:
+            sc_bkts[k]["wins"] += 1
+    score_distribution = [
+        {"range": k, "total": v["total"], "wins": v["wins"],
+         "win_rate": round(v["wins"] / v["total"] * 100, 1) if v["total"] else 0.0}
+        for k, v in sc_bkts.items()
+    ]
+
     return {
-        "avg_duration_hours":  avg_dur,
-        "best_trade_pnl":      best,
-        "worst_trade_pnl":     worst,
-        "avg_pnl_per_trade":   avg_p,
-        "avg_signal_score":    avg_sc,
-        "current_win_streak":  win_streak,
-        "current_loss_streak": loss_streak,
-        "monthly_pnl":         monthly_list,
-        "pnl_by_weekday":      pnl_by_wd,
-        "pnl_by_symbol":       pnl_by_sym,
+        "avg_duration_hours":   avg_dur,
+        "best_trade_pnl":       best,
+        "worst_trade_pnl":      worst,
+        "avg_pnl_per_trade":    avg_p,
+        "avg_signal_score":     avg_sc,
+        "current_win_streak":   win_streak,
+        "current_loss_streak":  loss_streak,
+        "monthly_pnl":          monthly_list,
+        "pnl_by_weekday":       pnl_by_wd,
+        "pnl_by_symbol":        pnl_by_sym,
+        # Enhanced analytics
+        "avg_win_usdt":         avg_win,
+        "avg_loss_usdt":        avg_loss,
+        "expected_value":       ev,
+        "sharpe_ratio":         sharpe,
+        "gross_profit":         gross_profit,
+        "gross_loss":           gross_loss,
+        "total_wins":           len(win_pnls),
+        "total_losses":         len(loss_pnls),
+        "pnl_by_hour":          pnl_by_hour,
+        "score_distribution":   score_distribution,
     }
 
 

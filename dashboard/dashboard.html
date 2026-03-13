@@ -200,6 +200,18 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
 .liq-safe{color:var(--mut)}
 /* RR badge */
 .rr-good{color:var(--grn)}.rr-bad{color:var(--red)}.rr-ok{color:var(--mut)}
+/* Sortable table headers */
+.tbl th.sth{cursor:pointer;user-select:none;white-space:nowrap}.tbl th.sth:hover{color:var(--txt);background:rgba(255,255,255,.03)}.tbl th.sth.sa::after{content:' ↑';color:var(--accent);font-size:.75em}.tbl th.sth.sd::after{content:' ↓';color:var(--accent);font-size:.75em}
+/* Risk metric row */
+.rmc{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:14px}
+.rmcard{background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:11px 12px}
+.rml{font-size:.62rem;color:var(--mut);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px}
+.rmv{font-size:1.05rem;font-weight:700;line-height:1.1}
+.rms{font-size:.67rem;color:var(--mut);margin-top:2px}
+/* Vol/OI badge in signals */
+.sig-vol{display:inline-block;padding:1px 5px;border-radius:4px;background:rgba(59,130,246,.12);color:var(--a2);font-size:.61rem;margin-left:4px}
+/* CSV export btn */
+.btn-csv{padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg3);color:var(--txt);font-size:.72rem;cursor:pointer;transition:opacity .15s}.btn-csv:hover{opacity:.75}
 </style>
 </head>
 <body>
@@ -506,8 +518,21 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
       <div class="cwm"><canvas id="wdc"></canvas></div>
     </div>
     <div class="card">
-      <div class="ch"><span class="ct2">Top 15 Symbols by PnL</span></div>
+      <div class="ch"><span class="ct2">Top 15 Symbols by PnL</span><span style="font-size:.67rem;color:var(--mut);margin-left:6px">Win% shown</span></div>
       <div id="symlst" style="overflow-y:auto;max-height:185px"></div>
+    </div>
+  </div>
+  <!-- Risk Metrics Row -->
+  <div class="rmc" id="pst-risk" style="margin-top:13px"></div>
+  <!-- Hourly PnL + Score Distribution -->
+  <div class="tc" style="margin-top:0">
+    <div class="card">
+      <div class="ch"><span class="ct2">Hourly PnL Distribution (UTC)</span><span style="font-size:.67rem;color:var(--mut);margin-left:6px">Best/worst hours to trade</span></div>
+      <div class="cwm"><canvas id="hrc"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="ch"><span class="ct2">Signal Score → Win Rate</span><span style="font-size:.67rem;color:var(--mut);margin-left:6px">Higher score = more wins?</span></div>
+      <div class="cwm"><canvas id="sdc"></canvas></div>
     </div>
   </div>
 </div>
@@ -669,16 +694,27 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
     <div class="card">
       <div class="ch">
         <span class="ct2">Coin Database — Win Stats</span>
-        <span class="ca" onclick="lCoinDB()">Refresh</span>
+        <div style="display:flex;gap:7px;align-items:center">
+          <input id="cdb-search" type="text" placeholder="Search symbol..." oninput="_filterCoinDB()" style="background:var(--bg3);color:var(--txt);border:1px solid var(--border);padding:4px 8px;border-radius:6px;font-size:.73rem;outline:none;width:120px"/>
+          <span class="ca" onclick="lCoinDB()">Refresh</span>
+        </div>
       </div>
       <div style="overflow-x:auto">
         <table class="tbl">
           <thead><tr>
-            <th>Symbol</th><th>Signals</th><th>Researched</th><th>Executed</th>
-            <th>W</th><th>L</th><th>Win%</th><th>Avg Score</th><th>Total PnL</th>
+            <th class="sth" onclick="_sortCoinDB('symbol')">Symbol</th>
+            <th class="sth" onclick="_sortCoinDB('total_signals')">Signals</th>
+            <th class="sth" onclick="_sortCoinDB('times_researched')">Research'd</th>
+            <th class="sth" onclick="_sortCoinDB('times_executed')">Executed</th>
+            <th class="sth" onclick="_sortCoinDB('wins')">W</th>
+            <th class="sth" onclick="_sortCoinDB('losses')">L</th>
+            <th class="sth" onclick="_sortCoinDB('win_rate')">Win%</th>
+            <th title="Execution rate: executed / researched" class="sth" onclick="_sortCoinDB('_conv')">Conv%</th>
+            <th class="sth" onclick="_sortCoinDB('avg_score')">Avg Score</th>
+            <th class="sth" onclick="_sortCoinDB('total_pnl')">Total PnL</th>
           </tr></thead>
           <tbody id="cdb-tb">
-            <tr><td colspan="9" style="text-align:center;color:var(--mut);padding:18px">Loading...</td></tr>
+            <tr><td colspan="10" style="text-align:center;color:var(--mut);padding:18px">Loading...</td></tr>
           </tbody>
         </table>
       </div>
@@ -688,10 +724,10 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
       <div style="overflow-x:auto">
         <table class="tbl">
           <thead><tr>
-            <th>Time</th><th>Symbol</th><th>Score</th><th>Decision</th><th>Outcome</th>
+            <th>Time</th><th>Symbol</th><th>Research Score</th><th>MTF%</th><th>Decision</th><th>Outcome</th>
           </tr></thead>
           <tbody id="rlog-tb">
-            <tr><td colspan="5" style="text-align:center;color:var(--mut);padding:18px">Loading...</td></tr>
+            <tr><td colspan="6" style="text-align:center;color:var(--mut);padding:18px">Loading...</td></tr>
           </tbody>
         </table>
       </div>
@@ -718,17 +754,44 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
         <option value="win">Wins only</option>
         <option value="loss">Losses only</option>
       </select>
-      <input id="hflt-sym" type="text" placeholder="Filter symbol..." oninput="_filterHistory()" style="width:130px"/>
+      <select id="hflt-strat" onchange="_filterHistory()" style="background:var(--bg3);color:var(--txt);border:1px solid var(--border);padding:5px 9px;border-radius:6px;font-size:.75rem;outline:none">
+        <option value="all">All Strategies</option>
+        <option value="TREND_FOLLOW">TREND_FOLLOW</option>
+        <option value="BREAKOUT">BREAKOUT</option>
+        <option value="LIQUIDITY_SWEEP">LIQUIDITY_SWEEP</option>
+        <option value="MOMENTUM">MOMENTUM</option>
+        <option value="MEAN_REVERSION">MEAN_REVERSION</option>
+        <option value="SCALP_BB">SCALP_BB</option>
+      </select>
+      <select id="hflt-exc" onchange="_filterHistory()" style="background:var(--bg3);color:var(--txt);border:1px solid var(--border);padding:5px 9px;border-radius:6px;font-size:.75rem;outline:none">
+        <option value="all">All Exchanges</option>
+        <option value="binance">Binance</option>
+        <option value="bybit">Bybit</option>
+      </select>
+      <input id="hflt-sym" type="text" placeholder="Filter symbol..." oninput="_filterHistory()" style="width:120px"/>
+      <input id="hflt-score-min" type="number" placeholder="Min score" oninput="_filterHistory()" style="width:85px;background:var(--bg3);color:var(--txt);border:1px solid var(--border);padding:5px 7px;border-radius:6px;font-size:.75rem;outline:none"/>
       <span id="hist-count" style="font-size:.72rem;color:var(--mut);margin-left:4px"></span>
+      <button class="btn-csv" onclick="_exportCSV()" style="margin-left:auto">⬇ Export CSV</button>
     </div>
     <div style="overflow-x:auto">
       <table class="tbl">
         <thead><tr>
-          <th>#</th><th>Symbol</th><th>Dir</th><th>Entry</th><th>Exit</th>
-          <th>PnL (USDT)</th><th>PnL%</th><th>Duration</th><th>Score</th><th>Strategy</th><th>Exchange</th><th>Closed At</th>
+          <th>#</th>
+          <th class="sth" onclick="_sortHist('symbol')">Symbol</th>
+          <th>Dir</th>
+          <th class="sth" onclick="_sortHist('entry_price')">Entry</th>
+          <th class="sth" onclick="_sortHist('exit_price')">Exit</th>
+          <th class="sth" onclick="_sortHist('pnl_usdt')">PnL (USDT)</th>
+          <th>PnL%</th>
+          <th class="sth" onclick="_sortHist('_duration')">Duration</th>
+          <th class="sth" onclick="_sortHist('signal_score')">Score</th>
+          <th class="sth" onclick="_sortHist('leverage')">Lev</th>
+          <th>Strategy</th>
+          <th>Exchange</th>
+          <th class="sth" onclick="_sortHist('closed_at')">Closed At</th>
         </tr></thead>
         <tbody id="hist-tb">
-          <tr><td colspan="12" style="text-align:center;color:var(--mut);padding:18px">Loading...</td></tr>
+          <tr><td colspan="13" style="text-align:center;color:var(--mut);padding:18px">Loading...</td></tr>
         </tbody>
       </table>
     </div>
@@ -808,7 +871,7 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
 </div>
 
 <script>
-var pC=null,wC=null,rkC=null,lC=null,cpC=null,prC=null,mpC=null,wdC=null,lnCurveC=null,resQualC=null;
+var pC=null,wC=null,rkC=null,lC=null,cpC=null,prC=null,mpC=null,wdC=null,lnCurveC=null,resQualC=null,hrC=null,sdC=null;
 var aS=[],aR=[],_rawHistData=[];
 var _prices={};         // live prices from WS tickers event { SYMBOL: price }
 var _posPrevPrices={};  // previous prices for flash direction in Open Positions
@@ -1028,7 +1091,14 @@ function sHTML(s,showT){
     var chgPct=(lp-s.price)/s.price*100;
     chgTag='<span style="font-size:.6rem;margin-left:3px" class="'+(chgPct>=0?'pos':'neg')+'">'+(chgPct>=0?'+':'')+chgPct.toFixed(2)+'%</span>';
   }
-  return '<div class="si"><div class="ss '+scc+'">'+sc+'</div><div class="sb2"><div><span class="ssym">'+s.symbol+'</span><span class="sdir s'+dc+'">'+s.direction+'</span>'+ai+lpTag+chgTag+'</div><div class="stags">'+tags+'</div></div>'+tm+'</div>';
+  // Volume badge
+  var volTag='';
+  if(s.volume_24h&&s.volume_24h>0){
+    var vm=s.volume_24h;
+    var vs=vm>=1e9?'$'+(vm/1e9).toFixed(1)+'B':vm>=1e6?'$'+(vm/1e6).toFixed(1)+'M':vm>=1e3?'$'+(vm/1e3).toFixed(0)+'K':'$'+vm.toFixed(0);
+    volTag='<span class="sig-vol">Vol:'+vs+'</span>';
+  }
+  return '<div class="si"><div class="ss '+scc+'">'+sc+'</div><div class="sb2"><div><span class="ssym">'+s.symbol+'</span><span class="sdir s'+dc+'">'+s.direction+'</span>'+ai+lpTag+chgTag+volTag+'</div><div class="stags">'+tags+'</div></div>'+tm+'</div>';
 }
 
 function dSig(){
@@ -1101,11 +1171,20 @@ function _rHMTiles(){
     // Live price from WS tickers
     var lp=c.symbol?_prices[c.symbol]:null;
     var lpStr=lp?'<div style="font-size:.6rem;color:rgba(255,255,255,.7);margin-top:1px">$'+Number(lp).toFixed(4)+'</div>':'';
-    return '<div class="hmc" style="background:'+bg+'" title="'+c.symbol+': '+pct.toFixed(2)+'%">'
+    // AI prediction badge
+    var aiPct=c.ai_prediction!=null?Math.round(c.ai_prediction*100):null;
+    var aiStr=aiPct!=null?'<div style="font-size:.59rem;color:'+(aiPct>=60?'#10b981':aiPct>=45?'#fbbf24':'#ff4466')+';margin-top:1px">AI '+aiPct+'%</div>':'';
+    // Volume badge
+    var vol=c.volume_24h;
+    var volStr='';
+    if(vol&&vol>0){var vs2=vol>=1e9?'$'+(vol/1e9).toFixed(1)+'B':vol>=1e6?'$'+(vol/1e6).toFixed(0)+'M':'';if(vs2)volStr='<div style="font-size:.57rem;color:rgba(255,255,255,.4)">'+vs2+'</div>';}
+    return '<div class="hmc" style="background:'+bg+'" title="'+c.symbol+': '+pct.toFixed(2)+'% | Vol: '+(vol?'$'+(vol/1e6).toFixed(0)+'M':'--')+'">'
       +'<div class="hms">'+c.symbol.replace('USDT','')+'</div>'
       +'<div class="hmp" style="color:'+tc+'">'+(pct>=0?'+':'')+pct.toFixed(1)+'%</div>'
       +(c.score?'<div class="hmsc">'+c.score+'pts</div>':'')
       +lpStr
+      +aiStr
+      +volStr
       +'</div>';
   }).join('');
 }
@@ -1524,11 +1603,33 @@ async function lPf(){
     ];
     p2.innerHTML=bCards.map(function(c){return '<div class="bwtc"><div class="bwtl">'+c.l+'</div><div class="bwtv '+(c.c||'')+'">'+c.v+'</div><div class="bwts">'+c.s+'</div></div>';}).join('');
   }
+  // Risk Metrics Row
+  var riskEl=document.getElementById('pst-risk');
+  if(riskEl){
+    var ev=adv.expected_value||0;var sh=adv.sharpe_ratio||0;
+    var aw=adv.avg_win_usdt||0;var al=adv.avg_loss_usdt||0;
+    var gp=adv.gross_profit||0;var gl=adv.gross_loss||0;
+    var tw=adv.total_wins||0;var tl2=adv.total_losses||0;
+    riskEl.innerHTML=[
+      {l:'Expected Value',v:(ev>=0?'+':'')+'$'+ev.toFixed(2),c:ev>=0?'pos':'neg',s:'Per trade EV'},
+      {l:'Sharpe Ratio',v:sh.toFixed(2),c:sh>=1?'pos':sh>=0?'neu':'neg',s:'Risk-adjusted return'},
+      {l:'Avg Win',v:'+$'+aw.toFixed(2),c:'pos',s:tw+' winning trades'},
+      {l:'Avg Loss',v:'$'+al.toFixed(2),c:'neg',s:tl2+' losing trades'},
+      {l:'Gross Profit',v:'+$'+gp.toFixed(2),c:'pos',s:'Sum of all wins'},
+      {l:'Gross Loss',v:'$'+gl.toFixed(2),c:'neg',s:'Sum of all losses'},
+      {l:'Win/Loss Ratio',v:al!==0?Math.abs(aw/al).toFixed(2)+':1':'--',c:'',s:'Avg win ÷ avg loss'},
+      {l:'Total Wins/Losses',v:tw+' / '+tl2,c:'',s:'Closed trades'},
+    ].map(function(c){
+      return '<div class="rmcard"><div class="rml">'+c.l+'</div><div class="rmv '+(c.c||'')+'">'+c.v+'</div><div class="rms">'+c.s+'</div></div>';
+    }).join('');
+  }
   bCPC(td.trades||[]);
   bPRC(m);
   bMPnL(adv.monthly_pnl||[]);
   bWDC(adv.pnl_by_weekday||[]);
   bSymLst(adv.pnl_by_symbol||[]);
+  bHRC(adv.pnl_by_hour||[]);
+  bSDC(adv.score_distribution||[]);
 }
 
 function bMPnL(data){
@@ -1559,18 +1660,22 @@ function bWDC(data){
 function bSymLst(data){
   var el=document.getElementById('symlst');if(!el)return;
   if(!data.length){el.innerHTML='<div style="color:var(--mut);font-size:.76rem;padding:8px">No closed trades yet</div>';return;}
+  var maxAbs=Math.max.apply(null,data.map(function(x){return Math.abs(x.pnl);}),0.01);
   el.innerHTML=data.map(function(d){
     var pc=d.pnl>=0?'pos':'neg';
     var sign=d.pnl>=0?'+':'';
-    var w=Math.min(Math.abs(d.pnl)/Math.max(...data.map(function(x){return Math.abs(x.pnl);}),1)*100,100);
+    var w=Math.min(Math.abs(d.pnl)/maxAbs*100,100);
     var bc=d.pnl>=0?'rgba(16,185,129,.35)':'rgba(255,68,102,.35)';
-    return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border)">'
-      +'<span style="font-weight:700;font-size:.78rem;min-width:90px">'+d.symbol.replace('USDT','')+'</span>'
-      +'<div style="flex:1;background:var(--bg3);border-radius:3px;height:8px;overflow:hidden">'
+    var wr=d.win_rate!=null?d.win_rate:0;
+    var wrCls=wr>=55?'pos':wr>=45?'neu':'neg';
+    return '<div style="display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid var(--border)">'
+      +'<span style="font-weight:700;font-size:.78rem;min-width:72px">'+d.symbol.replace('USDT','')+'</span>'
+      +'<div style="flex:1;background:var(--bg3);border-radius:3px;height:7px;overflow:hidden">'
         +'<div style="width:'+w+'%;height:100%;background:'+bc+';border-radius:3px"></div>'
       +'</div>'
-      +'<span class="'+pc+'" style="font-size:.75rem;font-weight:700;min-width:60px;text-align:right">'+sign+d.pnl.toFixed(2)+'</span>'
-      +'<span style="font-size:.65rem;color:var(--mut);min-width:28px">'+d.trades+'x</span>'
+      +'<span class="'+pc+'" style="font-size:.74rem;font-weight:700;min-width:56px;text-align:right">'+sign+d.pnl.toFixed(2)+'</span>'
+      +'<span class="'+wrCls+'" style="font-size:.68rem;min-width:38px;text-align:right">'+wr+'%</span>'
+      +'<span style="font-size:.64rem;color:var(--mut);min-width:22px">'+d.trades+'x</span>'
     +'</div>';
   }).join('');
 }
@@ -1583,6 +1688,51 @@ function bCPC(trades){
   closed.forEach(function(t){acc+=t.pnl_usdt||0;labels.push(new Date(t.closed_at).toLocaleDateString());cum.push(+acc.toFixed(2));});
   if(!labels.length){labels=['No trades'];cum=[0];}
   cpC=new Chart(ctx,{type:'line',data:{labels:labels,datasets:[{label:'Cumulative PnL',data:cum,borderColor:'#3b82f6',backgroundColor:'rgba(59,130,246,.07)',fill:true,tension:.4,pointRadius:2}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{color:'rgba(255,255,255,.04)'},ticks:{color:'#64748b',maxTicksLimit:8}},y:{grid:{color:'rgba(255,255,255,.04)'},ticks:{color:'#64748b'}}}}});
+}
+
+function bHRC(data){
+  var ctx=document.getElementById('hrc');if(!ctx)return;if(hrC)hrC.destroy();
+  var lbs=data.map(function(d){return d.hour+'h';});
+  var pnl=data.map(function(d){return d.pnl;});
+  var cnt=data.map(function(d){return d.count;});
+  var hasTrades=cnt.some(function(v){return v>0;});
+  if(!hasTrades){ctx.parentElement.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:140px;color:var(--mut);font-size:.76rem">Hourly distribution available after trades close</div>';return;}
+  hrC=new Chart(ctx,{type:'bar',
+    data:{labels:lbs,datasets:[
+      {label:'PnL (USDT)',data:pnl,backgroundColor:pnl.map(function(v){return v>0?'rgba(16,185,129,.65)':v<0?'rgba(255,68,102,.65)':'rgba(100,116,139,.3)';}),borderRadius:3,yAxisID:'y'},
+      {label:'Trades',data:cnt,type:'line',borderColor:'rgba(251,191,36,.7)',backgroundColor:'rgba(251,191,36,.08)',pointRadius:3,fill:false,yAxisID:'y1'}
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{labels:{color:'#94a3b8',font:{size:10}},position:'bottom'},
+        tooltip:{callbacks:{label:function(ctx2){return ctx2.dataset.label+': '+(ctx2.datasetIndex===0?'$'+ctx2.parsed.y.toFixed(2):ctx2.parsed.y+' trades');}}}},
+      scales:{
+        x:{grid:{color:'rgba(255,255,255,.04)'},ticks:{color:'#64748b',font:{size:9}},title:{display:true,text:'Hour (UTC)',color:'#64748b',font:{size:9}}},
+        y:{grid:{color:'rgba(255,255,255,.04)'},ticks:{color:'#64748b'},title:{display:true,text:'PnL $',color:'#64748b',font:{size:9}}},
+        y1:{position:'right',grid:{drawOnChartArea:false},ticks:{color:'#64748b',font:{size:9}},title:{display:true,text:'Trades',color:'#64748b',font:{size:9}}}
+      }
+    }});
+}
+
+function bSDC(data){
+  var ctx=document.getElementById('sdc');if(!ctx)return;if(sdC)sdC.destroy();
+  var hasTrades=data.some(function(d){return d.total>0;});
+  if(!hasTrades){ctx.parentElement.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:140px;color:var(--mut);font-size:.76rem">Score distribution available after trades close</div>';return;}
+  var lbs=data.map(function(d){return 'Score '+d.range+'  ('+d.total+'T)';});
+  var wr=data.map(function(d){return d.win_rate;});
+  var tot=data.map(function(d){return d.total;});
+  sdC=new Chart(ctx,{type:'bar',
+    data:{labels:lbs,datasets:[
+      {label:'Win Rate %',data:wr,backgroundColor:wr.map(function(v){return v>=60?'rgba(16,185,129,.75)':v>=50?'rgba(251,191,36,.75)':'rgba(255,68,102,.75)';}),borderRadius:4,yAxisID:'y'},
+      {label:'Trade Count',data:tot,type:'line',borderColor:'rgba(59,130,246,.7)',backgroundColor:'rgba(59,130,246,.08)',pointRadius:4,fill:false,yAxisID:'y1'}
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{labels:{color:'#94a3b8',font:{size:10}},position:'bottom'}},
+      scales:{
+        x:{grid:{color:'rgba(255,255,255,.04)'},ticks:{color:'#64748b',font:{size:9}}},
+        y:{grid:{color:'rgba(255,255,255,.04)'},ticks:{color:'#64748b'},min:0,max:100,title:{display:true,text:'Win Rate %',color:'#64748b',font:{size:9}}},
+        y1:{position:'right',grid:{drawOnChartArea:false},ticks:{color:'#64748b',font:{size:9}},title:{display:true,text:'Trades',color:'#64748b',font:{size:9}}}
+      }
+    }});
 }
 
 function bPRC(m){
@@ -1687,32 +1837,59 @@ async function lStr(){
   }).join('');
 }
 
+var _coinDBData=[];
+var _cdbSortKey='total_signals';var _cdbSortDir=-1;
+
+function _sortCoinDB(key){
+  if(_cdbSortKey===key)_cdbSortDir*=-1; else{_cdbSortKey=key;_cdbSortDir=-1;}
+  document.querySelectorAll('#cdb-tb').forEach(function(){});
+  document.querySelectorAll('th.sth').forEach(function(th){
+    if(th.getAttribute('onclick')==="_sortCoinDB('"+key+"')")th.classList.add(_cdbSortDir===-1?'sd':'sa');
+    else{th.classList.remove('sa','sd');}
+  });
+  _filterCoinDB();
+}
+
+function _filterCoinDB(){
+  var q=(document.getElementById('cdb-search')||{}).value||'';
+  var sq=q.toUpperCase().trim();
+  var rows=_coinDBData.filter(function(c){return !sq||c.symbol.indexOf(sq)!==-1;});
+  var sk=_cdbSortKey,sd2=_cdbSortDir;
+  rows.sort(function(a,b){
+    var av=sk==='_conv'?(a.times_researched>0?a.times_executed/a.times_researched:0):(a[sk]||0);
+    var bv=sk==='_conv'?(b.times_researched>0?b.times_executed/b.times_researched:0):(b[sk]||0);
+    return(av-bv)*sd2;
+  });
+  var ctb=document.getElementById('cdb-tb');if(!ctb)return;
+  ctb.innerHTML=rows.length?rows.map(function(c){
+    var wr=c.win_rate!=null?c.win_rate.toFixed(1)+'%':'--';
+    var wrc=c.win_rate>=55?'pos':c.win_rate>=45?'neu':'neg';
+    var pnl=c.total_pnl!=null?(c.total_pnl>=0?'+':'')+'$'+c.total_pnl.toFixed(2):'--';
+    var pnlc=c.total_pnl!=null?(c.total_pnl>=0?'tp':'tn'):'';
+    var conv=c.times_researched>0?Math.round(c.times_executed/c.times_researched*100)+'%':'--';
+    var convc=c.times_researched>0?(c.times_executed/c.times_researched>=0.5?'pos':'neu'):'';
+    return '<tr>'
+      +'<td class="tbls">'+c.symbol+'</td>'
+      +'<td>'+c.total_signals+'</td>'
+      +'<td>'+c.times_researched+'</td>'
+      +'<td>'+c.times_executed+'</td>'
+      +'<td class="pos">'+c.wins+'</td>'
+      +'<td class="neg">'+c.losses+'</td>'
+      +'<td class="'+wrc+'" style="font-weight:700">'+wr+'</td>'
+      +'<td class="'+convc+'" style="font-weight:600">'+conv+'</td>'
+      +'<td>'+(c.avg_score||0).toFixed(1)+'</td>'
+      +'<td class="'+pnlc+'" style="font-weight:700">'+pnl+'</td>'
+      +'</tr>';
+  }).join(''):'<tr><td colspan="10" style="text-align:center;color:var(--mut);padding:18px">'+
+    (sq?'No coins matching "'+q+'"':'No coin data yet — runs after first signals')+'</td></tr>';
+}
+
 // ── Coin Intelligence ───────────────────────────────────────────────────────
 async function lCoinDB(){
   var a=await Promise.all([ap('/api/coin-stats?limit=200'),ap('/api/research-log?limit=60')]);
-  var coins=a[0].coins||[];
+  _coinDBData=a[0].coins||[];
+  _filterCoinDB();
   var log=a[1].log||[];
-
-  var ctb=document.getElementById('cdb-tb');
-  if(ctb){
-    ctb.innerHTML=coins.length?coins.map(function(c){
-      var wr=c.win_rate!=null?c.win_rate.toFixed(1)+'%':'--';
-      var wrc=c.win_rate>=55?'pos':c.win_rate>=45?'neu':'neg';
-      var pnl=c.total_pnl!=null?(c.total_pnl>=0?'+':'')+'$'+c.total_pnl.toFixed(2):'--';
-      var pnlc=c.total_pnl!=null?(c.total_pnl>=0?'tp':'tn'):'';
-      return '<tr>'
-        +'<td class="tbls">'+c.symbol+'</td>'
-        +'<td>'+c.total_signals+'</td>'
-        +'<td>'+c.times_researched+'</td>'
-        +'<td>'+c.times_executed+'</td>'
-        +'<td class="pos">'+c.wins+'</td>'
-        +'<td class="neg">'+c.losses+'</td>'
-        +'<td class="'+wrc+'" style="font-weight:700">'+wr+'</td>'
-        +'<td>'+(c.avg_score||0).toFixed(1)+'</td>'
-        +'<td class="'+pnlc+'" style="font-weight:700">'+pnl+'</td>'
-        +'</tr>';
-    }).join(''):'<tr><td colspan="9" style="text-align:center;color:var(--mut);padding:18px">No coin data yet — runs after first signals</td></tr>';
-  }
 
   var rtb=document.getElementById('rlog-tb');
   if(rtb){
@@ -1721,14 +1898,18 @@ async function lCoinDB(){
       var dec=r.passed?'<span class="cib cib-pass">PASSED</span>':'<span class="cib cib-fail">FAILED</span>';
       var out=r.outcome_pnl==null?'<span class="cib cib-pend">Pending</span>'
         :(r.outcome_pnl>0?'<span class="cib cib-pass">WIN +$'+r.outcome_pnl.toFixed(2)+'</span>':'<span class="cib cib-fail">LOSS $'+r.outcome_pnl.toFixed(2)+'</span>');
+      var sc=r.research_score||0;
+      var scColor=sc>=7?'var(--grn)':sc>=4?'var(--yel)':'var(--red)';
+      var mtf=r.mtf_alignment!=null?+(r.mtf_alignment*100).toFixed(0)+'%':'--';
       return '<tr>'
         +'<td style="font-size:.68rem;color:var(--mut)">'+ts+'</td>'
         +'<td class="tbls">'+r.symbol+'</td>'
-        +'<td style="font-weight:700;color:var(--accent)">'+(r.research_score||0).toFixed(1)+'</td>'
+        +'<td><span style="font-weight:700;color:'+scColor+'">'+sc.toFixed(1)+'</span><span style="font-size:.64rem;color:var(--mut)">/10</span></td>'
+        +'<td style="font-size:.72rem;color:var(--mut)">'+mtf+'</td>'
         +'<td>'+dec+'</td>'
         +'<td>'+out+'</td>'
         +'</tr>';
-    }).join(''):'<tr><td colspan="5" style="text-align:center;color:var(--mut);padding:18px">No research log yet</td></tr>';
+    }).join(''):'<tr><td colspan="6" style="text-align:center;color:var(--mut);padding:18px">No research log yet</td></tr>';
   }
 }
 
@@ -1752,26 +1933,53 @@ async function lHistory(){
   }
 }
 
+var _histSortKey='closed_at';var _histSortDir=-1; // -1=desc, 1=asc
+
+function _sortHist(key){
+  if(_histSortKey===key)_histSortDir*=-1; else{_histSortKey=key;_histSortDir=-1;}
+  // Update header classes
+  document.querySelectorAll('#hist-tb').forEach(function(){});
+  document.querySelectorAll('th.sth').forEach(function(th){
+    th.classList.remove('sa','sd');
+    if(th.getAttribute('onclick')==="_sortHist('"+key+"')")th.classList.add(_histSortDir===-1?'sd':'sa');
+  });
+  _filterHistory();
+}
+
 function _filterHistory(){
   var dir=document.getElementById('hflt-dir');dir=dir?dir.value:'all';
   var res=document.getElementById('hflt-res');res=res?res.value:'all';
+  var strat=document.getElementById('hflt-strat');strat=strat?strat.value:'all';
+  var exc=document.getElementById('hflt-exc');exc=exc?exc.value:'all';
   var sym=document.getElementById('hflt-sym');sym=sym?sym.value.toUpperCase().trim():'';
+  var scoreMin=document.getElementById('hflt-score-min');scoreMin=scoreMin&&scoreMin.value?parseFloat(scoreMin.value):null;
   var rows=_rawHistData.filter(function(t){
     if(dir!=='all'&&t.direction!==dir)return false;
     if(res==='win'&&(t.pnl_usdt||0)<=0)return false;
     if(res==='loss'&&(t.pnl_usdt||0)>0)return false;
+    if(strat!=='all'&&(t.strategy||'')!==strat)return false;
+    if(exc!=='all'&&(t.exchange||'').toLowerCase().indexOf(exc)===-1)return false;
     if(sym&&t.symbol.indexOf(sym)===-1)return false;
+    if(scoreMin!=null&&(t.signal_score||0)<scoreMin)return false;
     return true;
+  });
+  // Sort
+  var sk=_histSortKey,sd=_histSortDir;
+  rows.sort(function(a,b){
+    var av=(sk==='_duration'&&a.opened_at&&a.closed_at)?new Date(a.closed_at)-new Date(a.opened_at):(a[sk]||0);
+    var bv=(sk==='_duration'&&b.opened_at&&b.closed_at)?new Date(b.closed_at)-new Date(b.opened_at):(b[sk]||0);
+    if(typeof av==='string')return av.localeCompare(bv)*sd;
+    return(av-bv)*sd;
   });
   var cnt=document.getElementById('hist-count');if(cnt)cnt.textContent=rows.length+' trades';
   var tb=document.getElementById('hist-tb');if(!tb)return;
-  if(!rows.length){tb.innerHTML='<tr><td colspan="12" style="text-align:center;color:var(--mut);padding:18px">No trades matching filter</td></tr>';return;}
+  if(!rows.length){tb.innerHTML='<tr><td colspan="13" style="text-align:center;color:var(--mut);padding:18px">No trades matching filter</td></tr>';return;}
   tb.innerHTML=rows.map(function(t,i){
-    var dir=(t.direction||'LONG').toLowerCase();
+    var dir2=(t.direction||'LONG').toLowerCase();
     var pnl=t.pnl_usdt||0;
     var pc=pnl>=0?'tp':'tn';
     var ps=pnl>=0?'+':'';
-    // PnL% estimate: pnl / (entry * qty / leverage)
+    // PnL% estimate
     var pnlPct='--';
     if(t.entry_price&&t.quantity&&t.leverage){
       var margin=(t.entry_price*t.quantity)/t.leverage;
@@ -1784,21 +1992,38 @@ function _filterHistory(){
     }
     var ts=t.closed_at?new Date(t.closed_at).toLocaleString():'--';
     var strat=t.strategy||'--';
+    var lev=t.leverage?t.leverage+'x':'--';
     return '<tr>'
       +'<td style="color:var(--mut);font-size:.71rem">'+(i+1)+'</td>'
       +'<td class="tbls">'+t.symbol+'</td>'
-      +'<td><span class="sdir s'+dir+'">'+t.direction+'</span></td>'
+      +'<td><span class="sdir s'+dir2+'">'+t.direction+'</span></td>'
       +'<td>'+(t.entry_price||0).toFixed(4)+'</td>'
       +'<td>'+(t.exit_price||0).toFixed(4)+'</td>'
       +'<td class="'+pc+'" style="font-weight:700">'+ps+pnl.toFixed(2)+'</td>'
       +'<td class="'+pc+'">'+pnlPct+'</td>'
       +'<td style="color:var(--mut);font-size:.75rem">'+dur+'</td>'
       +'<td>'+(t.signal_score||'--')+'</td>'
+      +'<td style="color:var(--a2);font-weight:600">'+lev+'</td>'
       +'<td style="font-size:.72rem;color:var(--mut)">'+strat+'</td>'
       +'<td style="font-size:.72rem;color:var(--mut)">'+t.exchange+'</td>'
       +'<td style="font-size:.68rem;color:var(--mut)">'+ts+'</td>'
       +'</tr>';
   }).join('');
+}
+
+function _exportCSV(){
+  var rows=_rawHistData;
+  if(!rows.length){toast('No trade data to export','inf');return;}
+  var hdr=['ID','Symbol','Direction','Entry','Exit','PnL_USDT','Leverage','Score','Strategy','Exchange','Opened','Closed'];
+  var lines=[hdr.join(',')].concat(rows.map(function(t){
+    return [t.id,t.symbol,t.direction,(t.entry_price||0).toFixed(6),(t.exit_price||0).toFixed(6),(t.pnl_usdt||0).toFixed(4),
+            t.leverage||'',t.signal_score||'',t.strategy||'',t.exchange||'',t.opened_at||'',t.closed_at||''].join(',');
+  }));
+  var blob=new Blob([lines.join('\n')],{type:'text/csv'});
+  var a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download='trade_history_'+new Date().toISOString().slice(0,10)+'.csv';
+  a.click();URL.revokeObjectURL(a.href);
+  toast('Exported '+rows.length+' trades','ok');
 }
 var _aiModels={
   openai:[
