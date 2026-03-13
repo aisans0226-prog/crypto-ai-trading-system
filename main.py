@@ -294,6 +294,56 @@ class TradingSystem:
         self._risk.reset_all_state()
         logger.info("TradingSystem: all runtime state reset for new session")
 
+    # ── Dashboard bot control ──────────────────────────────────────────────
+    @property
+    def is_paused(self) -> bool:
+        return self._bot_paused
+
+    async def close_position_from_dashboard(self, symbol: str) -> dict:
+        """Force-close a single open position — called from dashboard API."""
+        positions = await self._portfolio.get_open_positions()
+        if symbol not in positions:
+            return {"ok": False, "error": f"{symbol} not in open positions"}
+
+        pos_data = positions[symbol]
+
+        # Try WS ticker first, then klines cache, then REST fallback
+        current_price = float(self._cache.tickers.get(symbol, {}).get("c", 0))
+        if current_price <= 0:
+            df = self._klines_cache.get(symbol)
+            if df is not None and len(df) > 0:
+                current_price = float(df["close"].iloc[-1])
+        if current_price <= 0:
+            try:
+                kl = await self._data_engine.get_klines_binance(symbol, "1m", 2)
+                current_price = float(kl["close"].iloc[-1])
+            except Exception:
+                pass
+        if current_price <= 0:
+            current_price = float(pos_data.get("entry_price", 0))
+
+        executor = None if self.dry_run else (
+            self._bybit_exec if self.exchange == "bybit" else self._binance_exec
+        )
+        await self._force_close(symbol, pos_data, executor, current_price, "Dashboard manual close")
+        return {"ok": True, "symbol": symbol}
+
+    async def close_all_positions_from_dashboard(self) -> dict:
+        """Force-close ALL open positions — called from dashboard API."""
+        positions = await self._portfolio.get_open_positions()
+        if not positions:
+            return {"ok": True, "closed": 0, "symbols": []}
+
+        closed, errors = [], []
+        for symbol in list(positions.keys()):
+            result = await self.close_position_from_dashboard(symbol)
+            if result.get("ok"):
+                closed.append(symbol)
+            else:
+                errors.append(f"{symbol}: {result.get('error')}")
+
+        return {"ok": True, "closed": len(closed), "symbols": closed, "errors": errors}
+
     # ── WS event callback ─────────────────────────────────────────────────
     async def _on_ws_event(self, event: str, payload: dict) -> None:
         if event == "kline_closed":

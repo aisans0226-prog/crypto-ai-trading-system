@@ -479,6 +479,7 @@ async def get_bot_status():
     import time as _t
     started = state.bot_stats.get("started_at")
     uptime_s = round(_t.time() - started, 0) if started else 0
+    is_paused = getattr(state.trading_system, "is_paused", False) if state.trading_system else False
     return {
         "last_scan_ts":      state.bot_stats.get("last_scan_ts"),
         "watchlist_count":   state.bot_stats.get("watchlist_count", 0),
@@ -491,7 +492,46 @@ async def get_bot_status():
         "score_threshold":   getattr(_s, "effective_signal_score_threshold", _s.signal_score_threshold),
         "max_daily_trades":  getattr(_s, "effective_max_daily_trades", _s.max_daily_trades),
         "dry_run":           getattr(_s, "dry_run", True),
+        "is_paused":         is_paused,
     }
+
+
+@app.post("/api/bot/pause")
+async def pause_bot():
+    """Pause bot trading — scanning continues but no new trades are opened."""
+    if not state.trading_system:
+        return {"ok": False, "error": "Bot not running"}
+    state.trading_system._bot_paused = True
+    logger.info("Bot trading paused via dashboard")
+    await broadcast("bot_state", {"paused": True})
+    return {"ok": True, "paused": True}
+
+
+@app.post("/api/bot/resume")
+async def resume_bot():
+    """Resume bot trading after a pause."""
+    if not state.trading_system:
+        return {"ok": False, "error": "Bot not running"}
+    state.trading_system._bot_paused = False
+    logger.info("Bot trading resumed via dashboard")
+    await broadcast("bot_state", {"paused": False})
+    return {"ok": True, "paused": False}
+
+
+@app.post("/api/positions/{symbol}/close")
+async def close_position(symbol: str):
+    """Force-close a single open position at market price."""
+    if not state.trading_system:
+        return {"ok": False, "error": "Bot not running"}
+    return await state.trading_system.close_position_from_dashboard(symbol.upper())
+
+
+@app.post("/api/positions/close-all")
+async def close_all_positions():
+    """Force-close ALL open positions at market price."""
+    if not state.trading_system:
+        return {"ok": False, "error": "Bot not running"}
+    return await state.trading_system.close_all_positions_from_dashboard()
 
 
 @app.get("/api/signals")

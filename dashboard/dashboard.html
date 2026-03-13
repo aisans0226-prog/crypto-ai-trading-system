@@ -367,6 +367,9 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
     <div class="bsi"><span class="bsl">Signals</span><span class="bsv" id="bst-sig">--</span></div>
     <div class="bsi"><span class="bsl">Last Scan</span><span class="bsv" id="bst-ts">--</span></div>
     <div class="bsi"><span class="bsl">Uptime</span><span class="bsv" id="bst-up">--</span></div>
+    <div class="bsi" style="margin-left:auto">
+      <button id="bot-toggle-btn" onclick="toggleBot()" style="padding:5px 14px;border-radius:6px;border:none;font-size:.75rem;font-weight:700;cursor:pointer;transition:.2s;background:var(--grn);color:#fff">▶ Running</button>
+    </div>
   </div>
   <div class="cg">
     <div class="card">
@@ -532,7 +535,10 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
   <div class="card fw">
     <div class="ch">
       <span class="ct2">Open Positions <span id="pos-live-ts" style="font-size:.65rem;color:var(--grn);font-weight:400;margin-left:6px"></span></span>
-      <span id="expb" class="sbg" style="font-size:.7rem">Exposure: --</span>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span id="expb" class="sbg" style="font-size:.7rem">Exposure: --</span>
+        <button onclick="closeAllPos()" style="padding:4px 11px;background:rgba(255,68,102,.15);color:var(--red);border:1px solid rgba(255,68,102,.4);border-radius:5px;font-size:.72rem;font-weight:700;cursor:pointer">✕ Close All</button>
+      </div>
     </div>
     <!-- Desktop table -->
     <div id="mob-hide-tbl" style="overflow-x:auto">
@@ -540,10 +546,10 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
         <thead><tr>
           <th>Symbol</th><th>Dir</th><th>Lev</th><th>Entry</th><th>Current <span class="live-dot"></span></th><th>Unreal. PnL / ROE%</th>
           <th>SL</th><th>SL Dist%</th><th>TP</th><th>TP Dist%</th>
-          <th>Liq Est.</th><th>R:R Live</th><th>Time Open</th><th>Size (USDT)</th><th>Score</th><th>Exchange</th>
+          <th>Liq Est.</th><th>R:R Live</th><th>Time Open</th><th>Size (USDT)</th><th>Score</th><th>Exchange</th><th>Action</th>
         </tr></thead>
         <tbody id="ttb">
-          <tr><td colspan="16" style="text-align:center;color:var(--mut);padding:18px">No open positions</td></tr>
+          <tr><td colspan="17" style="text-align:center;color:var(--mut);padding:18px">No open positions</td></tr>
         </tbody>
       </table>
     </div>
@@ -1197,6 +1203,16 @@ function cwS(){
       }
     }
     if(d.type==='pending_orders') rPending(d.data.orders||[]);
+    if(d.type==='bot_state'){
+      var btn=document.getElementById('bot-toggle-btn');
+      if(btn){
+        var paused=!!d.data.paused;
+        btn.dataset.paused=paused?'true':'false';
+        btn.textContent=paused?'⏸ Paused — Click to Resume':'▶ Running — Click to Pause';
+        btn.style.background=paused?'var(--yel)':'var(--grn)';
+        btn.style.color=paused?'#000':'#fff';
+      }
+    }
     if(d.type==='system_update')toast(d.data.message||'Updated',d.data.success?'ok':'err');
     if(d.type==='session_reset'){
       toast('✅ Session reset — backup đã lưu','suc');
@@ -1278,6 +1294,57 @@ async function lBotStatus(){
   // Color mode badge
   var mEl=document.getElementById('bst-mode');
   if(mEl)mEl.className='bsv '+(d.training_mode?'badge-yel':d.dry_run?'badge-acc':'badge-green');
+  // Update bot toggle button
+  var btn=document.getElementById('bot-toggle-btn');
+  if(btn){
+    var paused=!!d.is_paused;
+    btn.dataset.paused=paused?'true':'false';
+    if(paused){
+      btn.textContent='⏸ Paused — Click to Resume';
+      btn.style.background='var(--yel)';btn.style.color='#000';
+    } else {
+      btn.textContent='▶ Running — Click to Pause';
+      btn.style.background='var(--grn)';btn.style.color='#fff';
+    }
+  }
+}
+
+async function toggleBot(){
+  var btn=document.getElementById('bot-toggle-btn');
+  if(!btn)return;
+  var isPaused=btn.dataset.paused==='true';
+  var endpoint=isPaused?'/api/bot/resume':'/api/bot/pause';
+  try{
+    btn.disabled=true;
+    var r=await ap(endpoint,'POST');
+    if(r.ok){
+      toast(isPaused?'▶ Bot resumed — trading active':'⏸ Bot paused — no new trades','ok');
+      await lBotStatus();
+    } else {
+      toast('Error: '+(r.error||'unknown'),'err');
+    }
+  }catch(e){toast('Error: '+e.message,'err');}
+  finally{btn.disabled=false;}
+}
+
+async function closePos(sym){
+  if(!confirm('Đóng lệnh '+sym+'?\n\nLệnh sẽ được đóng ngay tại giá thị trường.'))return;
+  try{
+    toast('Đang đóng '+sym+'...','inf');
+    var r=await ap('/api/positions/'+encodeURIComponent(sym)+'/close','POST');
+    if(r.ok){toast('✅ Đã đóng: '+sym,'ok');}
+    else{toast('Lỗi: '+(r.error||'unknown'),'err');}
+  }catch(e){toast('Lỗi: '+e.message,'err');}
+}
+
+async function closeAllPos(){
+  if(!confirm('Đóng TẤT CẢ lệnh đang mở?\n\nToàn bộ lệnh sẽ được đóng tại giá thị trường.'))return;
+  try{
+    toast('Đang đóng tất cả lệnh...','inf');
+    var r=await ap('/api/positions/close-all','POST');
+    if(r.ok){toast('✅ Đã đóng '+r.closed+' lệnh','ok');}
+    else{toast('Lỗi: '+(r.error||'unknown'),'err');}
+  }catch(e){toast('Lỗi: '+e.message,'err');}
 }
 
 function sHTML(s,showT){
@@ -1678,6 +1745,9 @@ function rPos(pos, exp, animate) {
           +'<span style="color:'+(liqWarn?'var(--yel)':'var(--mut)')+'">Liq: '+liqStr+'</span>'
           +'<span style="color:var(--mut)">'+( p.exchange||'--')+'</span>'
         +'</div>'
+        +'<div style="margin-top:7px">'
+          +'<button onclick="closePos(\''+s+'\')" style="width:100%;padding:6px;background:rgba(255,68,102,.15);color:var(--red);border:1px solid rgba(255,68,102,.4);border-radius:5px;font-size:.75rem;font-weight:700;cursor:pointer">✕ Close Position</button>'
+        +'</div>'
       +'</div>';
     }).join(''):'<div style="color:var(--mut);padding:28px;text-align:center;font-size:.82rem">No open positions</div>';
     return;
@@ -1728,8 +1798,9 @@ function rPos(pos, exp, animate) {
       +'<td style="color:var(--mut);font-size:.75rem">'+timeOpen+'</td>'
       +'<td>$'+(p.position_size_usdt||0).toFixed(2)+'</td>'
       +'<td>'+(p.signal_score||'--')+'</td>'
-      +'<td>'+(p.exchange||'--')+'</td></tr>';
-  }).join(''):'<tr><td colspan="16" style="text-align:center;color:var(--mut);padding:18px">No open positions</td></tr>';
+      +'<td>'+(p.exchange||'--')+'</td>'
+      +'<td><button onclick="closePos(\''+s+'\')" style="padding:3px 9px;background:rgba(255,68,102,.15);color:var(--red);border:1px solid rgba(255,68,102,.4);border-radius:4px;font-size:.7rem;font-weight:700;cursor:pointer;white-space:nowrap">✕ Close</button></td></tr>';
+  }).join(''):'<tr><td colspan="17" style="text-align:center;color:var(--mut);padding:18px">No open positions</td></tr>';
 }
 
 function rPending(orders){
