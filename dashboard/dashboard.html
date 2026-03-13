@@ -212,6 +212,23 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
 .sig-vol{display:inline-block;padding:1px 5px;border-radius:4px;background:rgba(59,130,246,.12);color:var(--a2);font-size:.61rem;margin-left:4px}
 /* CSV export btn */
 .btn-csv{padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg3);color:var(--txt);font-size:.72rem;cursor:pointer;transition:opacity .15s}.btn-csv:hover{opacity:.75}
+/* Bot Config interactive form */
+.bcfg-tb{padding:6px 14px;border-radius:6px;border:1px solid var(--border);background:var(--bg3);color:var(--mut);font-size:.78rem;cursor:pointer;transition:all .15s}
+.bcfg-tb:hover{color:var(--txt);border-color:var(--accent)}
+.bcfg-tb.ac{background:var(--accent);color:#0f1923;border-color:var(--accent);font-weight:700}
+.bcfg-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px}
+.bcfg-fld label{font-size:.69rem;color:var(--mut);display:block;margin-bottom:4px;font-weight:500;text-transform:uppercase;letter-spacing:.04em}
+.bcfg-fld input[type=number]{width:100%;background:var(--bg3);color:var(--txt);border:1px solid var(--border);padding:7px 10px;border-radius:7px;font-size:.84rem;outline:none;transition:border-color .15s}
+.bcfg-fld input[type=number]:focus{border-color:var(--accent)}
+.bcfg-hint{font-size:.64rem;color:var(--mut);margin-top:3px;line-height:1.4}
+.bcfg-toggle{display:flex;align-items:center;gap:11px;padding:11px 13px;background:var(--bg3);border-radius:8px;border:1px solid var(--border);cursor:pointer;user-select:none;transition:border-color .15s}
+.bcfg-toggle:hover{border-color:var(--accent)}
+.bcfg-toggle input[type=checkbox]{display:none}
+.bcfg-sw{flex-shrink:0;width:38px;height:21px;border-radius:11px;background:var(--border);position:relative;transition:background .2s}
+.bcfg-sw::after{content:'';position:absolute;width:15px;height:15px;border-radius:50%;background:#fff;top:3px;left:3px;transition:left .2s}
+.bcfg-toggle input:checked+.bcfg-sw{background:var(--accent)}
+.bcfg-toggle input:checked+.bcfg-sw::after{left:20px}
+.bcfg-toggle strong{font-size:.8rem;color:var(--txt)}
 </style>
 </head>
 <body>
@@ -550,7 +567,8 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
 
 <!-- SYSTEM PAGE -->
 <div class="page" id="page-system">
-  <div class="tc">
+  <!-- Row 1: Version + (spacer taking ~half width) -->
+  <div class="tc" style="margin-bottom:13px">
     <div class="card">
       <div class="ch"><span class="ct2">Version &amp; Auto-Update</span></div>
       <div class="uc">
@@ -566,13 +584,120 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
       </div>
       <div id="updlog" style="margin-top:9px;font-size:.72rem;color:var(--mut)"></div>
     </div>
-    <div class="card">
-      <div class="ch"><span class="ct2">Bot Configuration</span><span style="font-size:.67rem;color:var(--mut)">Live from .env</span></div>
-      <div id="bcfg-body">
-        <div style="color:var(--mut);font-size:.75rem;padding:8px">Loading config...</div>
+    <!-- Blank fill card -->
+    <div class="card" style="background:transparent;border:1px solid rgba(255,255,255,.04)">
+      <div style="padding:6px 0;font-size:.74rem;color:var(--mut)">
+        Bot configuration is managed in the panel below.<br>Most changes apply immediately without restart.
       </div>
     </div>
   </div>
+
+  <!-- Row 2: Interactive Bot Configuration (full width) -->
+  <div class="card fw" style="margin-bottom:13px">
+    <div class="ch">
+      <span class="ct2">Bot Configuration</span>
+      <span style="font-size:.67rem;color:var(--mut);margin-left:6px">Changes saved to .env — most applied immediately</span>
+      <span class="ca" onclick="lSy()" style="margin-left:auto">↺ Reload</span>
+    </div>
+
+    <!-- Training-mode override warning -->
+    <div id="bcfg-train" style="display:none;padding:9px 13px;background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.35);border-radius:7px;margin-bottom:12px;font-size:.77rem;color:#fbbf24">
+      ⚠ <strong>Training Mode ACTIVE</strong> — Signal threshold, confirmations, cooldown, research score, volume filter, max trades, hold time are overridden. Changes save to .env but take effect after Training Mode is disabled.
+    </div>
+
+    <!-- Tab bar -->
+    <div style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap;border-bottom:1px solid var(--border);padding-bottom:10px">
+      <button class="bcfg-tb ac" onclick="bcfgTab(this,'risk')" data-tab="risk">Risk</button>
+      <button class="bcfg-tb" onclick="bcfgTab(this,'signals')" data-tab="signals">Signals</button>
+      <button class="bcfg-tb" onclick="bcfgTab(this,'position')" data-tab="position">Position Mgmt</button>
+      <button class="bcfg-tb" onclick="bcfgTab(this,'fees')" data-tab="fees">Fees</button>
+      <button class="bcfg-tb" onclick="bcfgTab(this,'mode')" data-tab="mode">Mode &amp; Toggles</button>
+    </div>
+
+    <!-- Tab: Risk -->
+    <div class="bcfg-pn" id="bcfg-risk">
+      <div class="bcfg-grid">
+        <div class="bcfg-fld"><label>Risk per Trade (%)</label><input type="number" id="bc-risk_per_trade_pct" min="0.1" max="10" step="0.1"/><div class="bcfg-hint">% of balance risked per position (1% recommended)</div></div>
+        <div class="bcfg-fld"><label>Max Leverage (x)</label><input type="number" id="bc-max_leverage" min="1" max="50" step="1"/><div class="bcfg-hint">Maximum leverage allowed for any trade</div></div>
+        <div class="bcfg-fld"><label>Max Open Trades</label><input type="number" id="bc-max_open_trades" min="1" max="30" step="1"/><div class="bcfg-hint">Max simultaneous open positions</div></div>
+        <div class="bcfg-fld"><label>Max Daily Trades</label><input type="number" id="bc-max_daily_trades" min="1" max="100" step="1"/><div class="bcfg-hint">Hard cap on new entries per UTC day</div></div>
+        <div class="bcfg-fld"><label>Min Risk:Reward</label><input type="number" id="bc-min_risk_reward_ratio" min="0.5" max="10" step="0.1"/><div class="bcfg-hint">Minimum TP:SL ratio to accept a trade</div></div>
+        <div class="bcfg-fld"><label>Max SL % from Entry</label><input type="number" id="bc-max_stop_loss_pct" min="0.1" max="20" step="0.1"/><div class="bcfg-hint">SL capped at this % below/above entry price</div></div>
+        <div class="bcfg-fld"><label>Min SL % from Entry</label><input type="number" id="bc-min_stop_loss_pct" min="0.1" max="5" step="0.1"/><div class="bcfg-hint">SL must be at least this far (prevents huge size)</div></div>
+        <div class="bcfg-fld"><label>Max Position Size (%)</label><input type="number" id="bc-max_position_size_pct" min="1" max="100" step="1"/><div class="bcfg-hint">Each trade max this % of tradeable balance</div></div>
+        <div class="bcfg-fld"><label>Balance Reserve (%)</label><input type="number" id="bc-balance_reserve_pct" min="0" max="90" step="5"/><div class="bcfg-hint">Permanent % of balance never used as margin</div></div>
+        <div class="bcfg-fld"><label>Max Daily Loss (%)</label><input type="number" id="bc-max_daily_loss_pct" min="0.5" max="50" step="0.5"/><div class="bcfg-hint">Halt all new trades when daily loss exceeds this</div></div>
+      </div>
+    </div>
+
+    <!-- Tab: Signals -->
+    <div class="bcfg-pn" id="bcfg-signals" style="display:none">
+      <div class="bcfg-grid">
+        <div class="bcfg-fld"><label>Signal Score Threshold</label><input type="number" id="bc-signal_score_threshold" min="3" max="18" step="1"/><div class="bcfg-hint">Min score to add coin to watchlist (max 18)</div></div>
+        <div class="bcfg-fld"><label>Watchlist Confirmations</label><input type="number" id="bc-watchlist_confirmations" min="0" max="10" step="1"/><div class="bcfg-hint">Scan cycles signal must persist before research</div></div>
+        <div class="bcfg-fld"><label>Cooldown (min)</label><input type="number" id="bc-signal_cooldown_minutes" min="1" max="120" step="1"/><div class="bcfg-hint">Minutes before same coin can re-enter watchlist</div></div>
+        <div class="bcfg-fld"><label>Research Min Score</label><input type="number" id="bc-research_min_score" min="0" max="10" step="0.5"/><div class="bcfg-hint">MTF research score gate (out of 10) to proceed</div></div>
+        <div class="bcfg-fld"><label>MTF Alignment (%)</label><input type="number" id="bc-research_min_mtf_alignment" min="0" max="1" step="0.05"/><div class="bcfg-hint">Fraction of timeframes that must agree (0.67 = 2/3)</div></div>
+        <div class="bcfg-fld"><label>Min ML Confidence</label><input type="number" id="bc-min_ml_confidence" min="0" max="1" step="0.05"/><div class="bcfg-hint">Minimum ML ensemble probability to confirm entry</div></div>
+        <div class="bcfg-fld"><label>Min Volume (USDT)</label><input type="number" id="bc-min_volume_usdt" min="100000" max="10000000" step="100000"/><div class="bcfg-hint">24h volume filter for coin eligibility</div></div>
+        <div class="bcfg-fld"><label>Max Signals/Scan</label><input type="number" id="bc-max_signals_per_scan" min="10" max="500" step="10"/><div class="bcfg-hint">Cap new signals per cycle (lower = faster scan)</div></div>
+      </div>
+    </div>
+
+    <!-- Tab: Position Management -->
+    <div class="bcfg-pn" id="bcfg-position" style="display:none">
+      <div class="bcfg-grid">
+        <div class="bcfg-fld"><label>Trailing Activation (%)</label><input type="number" id="bc-trailing_stop_activation_pct" min="0.5" max="20" step="0.5"/><div class="bcfg-hint">Profit % required to activate trailing SL</div></div>
+        <div class="bcfg-fld"><label>Trailing Distance (%)</label><input type="number" id="bc-trailing_stop_distance_pct" min="0.1" max="10" step="0.1"/><div class="bcfg-hint">Trailing SL trails this % behind peak price</div></div>
+        <div class="bcfg-fld"><label>Trailing Min Move (%)</label><input type="number" id="bc-trailing_stop_min_move_pct" min="0.05" max="2" step="0.05"/><div class="bcfg-hint">Only update exchange SL if it improves by at least this</div></div>
+        <div class="bcfg-fld"><label>Breakeven Trigger (%)</label><input type="number" id="bc-breakeven_trigger_pct" min="0.5" max="20" step="0.5"/><div class="bcfg-hint">Move SL to entry+buffer after this % unrealized gain</div></div>
+        <div class="bcfg-fld"><label>Max Hold Hours</label><input type="number" id="bc-max_position_hold_hours" min="0" max="168" step="1"/><div class="bcfg-hint">Force-close after N hours (0 = disabled)</div></div>
+        <div class="bcfg-fld"><label>Entry Deviation (%)</label><input type="number" id="bc-entry_max_deviation_pct" min="0.1" max="5" step="0.1"/><div class="bcfg-hint">Abort if live price drifts this % before order</div></div>
+        <div class="bcfg-fld"><label>Reversal Exit (%)</label><input type="number" id="bc-reversal_exit_pct" min="0.5" max="20" step="0.5"/><div class="bcfg-hint">Force-close if down this % from entry</div></div>
+        <div class="bcfg-fld"><label>Reversal Min Hours</label><input type="number" id="bc-reversal_exit_min_hours" min="0" max="24" step="0.5"/><div class="bcfg-hint">Reversal exit fires only after position is open this long</div></div>
+      </div>
+    </div>
+
+    <!-- Tab: Fees -->
+    <div class="bcfg-pn" id="bcfg-fees" style="display:none">
+      <div class="bcfg-grid" style="max-width:600px">
+        <div class="bcfg-fld"><label>Taker Fee (%)</label><input type="number" id="bc-taker_fee_pct" min="0.01" max="0.5" step="0.01"/><div class="bcfg-hint">Round-trip taker fee per side (Binance Futures ≈ 0.04%)</div></div>
+        <div class="bcfg-fld"><label>Max Funding Rate (%/8h)</label><input type="number" id="bc-max_funding_rate_pct" min="0.01" max="1" step="0.01"/><div class="bcfg-hint">Worst-case funding rate per 8 h period (normal ≈ 0.01%)</div></div>
+        <div class="bcfg-fld"><label>Funding Periods Budget</label><input type="number" id="bc-funding_periods_estimate" min="1" max="20" step="1"/><div class="bcfg-hint">Number of 8 h periods to budget for when sizing positions</div></div>
+      </div>
+    </div>
+
+    <!-- Tab: Mode & Toggles -->
+    <div class="bcfg-pn" id="bcfg-mode" style="display:none">
+      <div class="bcfg-grid">
+        <div class="bcfg-fld"><label>Exchange</label>
+          <select id="bc-exchange" style="width:100%;background:var(--bg3);color:var(--txt);border:1px solid var(--border);padding:7px 9px;border-radius:6px;font-size:.82rem;outline:none">
+            <option value="binance">Binance</option>
+            <option value="bybit">Bybit</option>
+          </select>
+          <div class="bcfg-hint">Active exchange (requires restart)</div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px;margin-top:10px">
+        <label class="bcfg-toggle"><input type="checkbox" id="bc-dry_run"/><span class="bcfg-sw"></span><div><strong>Dry Run Mode</strong><div class="bcfg-hint">Simulate orders — no real money. Requires restart (or use --dry-run CLI flag)</div></div></label>
+        <label class="bcfg-toggle"><input type="checkbox" id="bc-training_mode"/><span class="bcfg-sw"></span><div><strong>Training Mode</strong><div class="bcfg-hint">Aggressive settings to collect ML training data fast</div></div></label>
+        <label class="bcfg-toggle"><input type="checkbox" id="bc-binance_testnet"/><span class="bcfg-sw"></span><div><strong>Binance Testnet</strong><div class="bcfg-hint">Use testnet API for Binance (requires restart)</div></div></label>
+        <label class="bcfg-toggle"><input type="checkbox" id="bc-trailing_stop_enabled"/><span class="bcfg-sw"></span><div><strong>Trailing Stop</strong><div class="bcfg-hint">Enable trailing stop-loss on all positions</div></div></label>
+        <label class="bcfg-toggle"><input type="checkbox" id="bc-breakeven_stop_enabled"/><span class="bcfg-sw"></span><div><strong>Breakeven Stop</strong><div class="bcfg-hint">Move SL to entry when profit threshold is hit</div></div></label>
+        <label class="bcfg-toggle"><input type="checkbox" id="bc-reversal_exit_enabled"/><span class="bcfg-sw"></span><div><strong>Reversal Exit</strong><div class="bcfg-hint">Force-close stale losing positions early</div></div></label>
+        <label class="bcfg-toggle"><input type="checkbox" id="bc-strategy_discovery_enabled"/><span class="bcfg-sw"></span><div><strong>Auto Strategy Discovery</strong><div class="bcfg-hint">Automatically select best-performing strategy</div></div></label>
+      </div>
+    </div>
+
+    <!-- Save row -->
+    <div style="display:flex;gap:9px;align-items:center;margin-top:18px;padding-top:14px;border-top:1px solid var(--border)">
+      <button class="btn bp" onclick="saveBotCfg()" style="padding:9px 24px;font-size:.84rem">Save Changes</button>
+      <button class="btn bo" onclick="lSy()" style="padding:9px 16px;font-size:.84rem">↺ Reset</button>
+      <span id="bcfg-msg" style="font-size:.77rem;margin-left:4px"></span>
+    </div>
+  </div>
+
+  <!-- Row 3: Live System Log -->
   <div class="card fw">
     <div class="ch"><span class="ct2">Live System Log</span></div>
     <div id="logc"></div>
@@ -787,6 +912,7 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
           <th class="sth" onclick="_sortHist('exit_price')">Exit</th>
           <th class="sth" onclick="_sortHist('pnl_usdt')">PnL (USDT)</th>
           <th>PnL%</th>
+          <th class="sth" onclick="_sortHist('funding_fee_usdt')">Funding</th>
           <th class="sth" onclick="_sortHist('_duration')">Duration</th>
           <th class="sth" onclick="_sortHist('signal_score')">Score</th>
           <th class="sth" onclick="_sortHist('leverage')">Lev</th>
@@ -795,7 +921,7 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
           <th class="sth" onclick="_sortHist('closed_at')">Closed At</th>
         </tr></thead>
         <tbody id="hist-tb">
-          <tr><td colspan="13" style="text-align:center;color:var(--mut);padding:18px">Loading...</td></tr>
+          <tr><td colspan="14" style="text-align:center;color:var(--mut);padding:18px">Loading...</td></tr>
         </tbody>
       </table>
     </div>
@@ -1585,14 +1711,20 @@ async function lPf(){
   var a=await Promise.all([ap('/api/metrics'),ap('/api/trades?limit=200'),ap('/api/advanced-stats')]);
   var m=a[0],td=a[1],adv=a[2];
   var el=document.getElementById('pst');
+  var wr=+(m.win_rate||0); var lr=100-wr;
+  var gp=adv.gross_profit||0; var gl=Math.abs(adv.gross_loss||0);
   el.innerHTML=[
-    ['Total Trades',m.total_trades||0,''],
-    ['Total PnL',(+(m.total_pnl||0)>=0?'+$':'-$')+Math.abs(+(m.total_pnl||0)).toFixed(2),(m.total_pnl||0)>=0?'pos':'neg'],
-    ['Win Rate',(+(m.win_rate||0)).toFixed(1)+'%',(m.win_rate||0)>=50?'pos':'neg'],
-    ['Profit Factor',(+(m.profit_factor||0)).toFixed(2),(m.profit_factor||0)>=1?'pos':'neg'],
-    ['Max Drawdown','-'+(+(m.max_drawdown_pct||0)).toFixed(1)+'%','neg'],
-    ['Daily PnL',(+(m.daily_pnl||0)>=0?'+$':'-$')+Math.abs(+(m.daily_pnl||0)).toFixed(2),(m.daily_pnl||0)>=0?'pos':'neg'],
-  ].map(function(x){return '<div class="sc"><div class="sl">'+x[0]+'</div><div class="sv '+x[2]+'">'+x[1]+'</div></div>';}).join('');
+    ['Total Trades',m.total_trades||0,'',''],
+    ['Total PnL',(+(m.total_pnl||0)>=0?'+$':'-$')+Math.abs(+(m.total_pnl||0)).toFixed(2),(m.total_pnl||0)>=0?'pos':'neg',''],
+    ['Win Rate',wr.toFixed(1)+'%',wr>=50?'pos':'neg','+$'+gp.toFixed(2)+' won'],
+    ['Lose Rate',lr.toFixed(1)+'%',lr<50?'neu':'neg','-$'+gl.toFixed(2)+' lost'],
+    ['Profit Factor',(+(m.profit_factor||0)).toFixed(2),(m.profit_factor||0)>=1?'pos':'neg',''],
+    ['Max Drawdown','-'+(+(m.max_drawdown_pct||0)).toFixed(1)+'%','neg',''],
+    ['Daily PnL',(+(m.daily_pnl||0)>=0?'+$':'-$')+Math.abs(+(m.daily_pnl||0)).toFixed(2),(m.daily_pnl||0)>=0?'pos':'neg',''],
+  ].map(function(x){
+    var sub=x[3]?'<div class="svc '+x[2]+'" style="font-size:.67rem;margin-top:1px">'+x[3]+'</div>':'';
+    return '<div class="sc"><div class="sl">'+x[0]+'</div><div class="sv '+x[2]+'">'+x[1]+'</div>'+sub+'</div>';
+  }).join('');
   // Best/Worst/Streak cards
   var p2=document.getElementById('pst2');
   if(p2){
@@ -1628,7 +1760,8 @@ async function lPf(){
       {l:'Win/Loss Ratio',v:al!==0?Math.abs(aw/al).toFixed(2)+':1':'--',c:'',s:'Avg win ÷ avg loss'},
       {l:'Total Wins/Losses',v:tw+' / '+tl2,c:'',s:'Closed trades'},
       {l:'Max Loss Streak',v:mls,c:mls>=5?'neg':mls>=3?'neu':'',s:'Worst consecutive losses'},
-      {l:'Fee Impact',v:fip.toFixed(1)+'%',c:fip>30?'neg':fip>15?'neu':'pos',s:'Estimated fees vs profit'},
+      {l:'Fee Impact',v:fip.toFixed(1)+'%',c:fip>30?'neg':fip>15?'neu':'pos',s:'Estimated taker fees vs profit'},
+      {l:'Total Funding Fees',v:'$'+(adv.total_funding_fees||0).toFixed(4),c:'neg',s:'Sum of estimated hold fees'},
     ].map(function(c){
       return '<div class="rmcard"><div class="rml">'+c.l+'</div><div class="rmv '+(c.c||'')+'">'+c.v+'</div><div class="rms">'+c.s+'</div></div>';
     }).join('');
@@ -1805,39 +1938,97 @@ async function lSy(){
     var row=document.getElementById('uarow');if(row)row.style.display='flex';
     var nc=document.getElementById('ncmt');if(nc)nc.textContent=d.latest_commit||'--';
   }
-  // Dynamic bot config
+  // Interactive bot config form
   var cfg=await ap('/api/bot-config');
-  var bcfg=document.getElementById('bcfg-body');
-  if(bcfg&&cfg){
-    var rows=[];
-    var r=cfg.risk||{};var f=cfg.fees||{};var p=cfg.position_mgmt||{};var sg=cfg.signals||{};var mo=cfg.mode||{};
-    var yn=function(v){return v?'<span class="pos">Yes</span>':'<span class="neg">No</span>';};
-    rows.push(['Risk per trade',r.risk_per_trade_pct+'%']);
-    rows.push(['Max leverage',r.max_leverage+'x']);
-    rows.push(['Max open trades',r.max_open_trades]);
-    rows.push(['Max daily trades',r.max_daily_trades]);
-    rows.push(['Min risk-reward','1 : '+r.min_risk_reward_ratio]);
-    rows.push(['Max SL %',r.max_stop_loss_pct+'%']);
-    rows.push(['Min SL %',r.min_stop_loss_pct+'%']);
-    rows.push(['Max position size',r.max_position_size_pct+'% of free']);
-    rows.push(['Balance reserve',r.balance_reserve_pct+'%']);
-    rows.push(['Max daily loss',r.max_daily_loss_pct+'%']);
-    rows.push(['Taker fee',f.taker_fee_pct+'%']);
-    rows.push(['Max funding/8h',f.max_funding_rate_pct+'%']);
-    rows.push(['Trailing activation',p.trailing_stop_activation_pct+'%']);
-    rows.push(['Trailing distance',p.trailing_stop_distance_pct+'%']);
-    rows.push(['Breakeven trigger',p.breakeven_trigger_pct+'%']);
-    rows.push(['Max hold hours',p.max_position_hold_hours+'h']);
-    rows.push(['Signal threshold','Score ≥ '+sg.signal_score_threshold]);
-    rows.push(['Confirmations needed',sg.watchlist_confirmations]);
-    rows.push(['Min volume',('$'+(sg.min_volume_usdt/1e6).toFixed(1)+'M')]);
-    rows.push(['Dry run',yn(mo.dry_run)]);
-    rows.push(['Training mode',yn(mo.training_mode)]);
-    rows.push(['Exchange',String(mo.exchange||'--').toUpperCase()+(mo.binance_testnet?' (TESTNET)':'')]);
-    rows.push(['AI enabled',yn(mo.ai_enabled)+(mo.ai_enabled?' — '+mo.ai_provider+' / '+mo.ai_model:'')]);
-    bcfg.innerHTML='<table class="tbl"><tbody>'
-      +rows.map(function(x){return '<tr><td class="neu">'+x[0]+'</td><td style="font-weight:600">'+x[1]+'</td></tr>';}).join('')
-      +'</tbody></table>';
+  if(!cfg)return;
+  var r=cfg.risk||{};var f=cfg.fees||{};var p=cfg.position_mgmt||{};var sg=cfg.signals||{};var mo=cfg.mode||{};
+  // Numeric fields
+  var nf={
+    risk_per_trade_pct:r.risk_per_trade_pct, max_leverage:r.max_leverage,
+    max_open_trades:r.max_open_trades, max_daily_trades:r.max_daily_trades,
+    min_risk_reward_ratio:r.min_risk_reward_ratio, max_stop_loss_pct:r.max_stop_loss_pct,
+    min_stop_loss_pct:r.min_stop_loss_pct, max_position_size_pct:r.max_position_size_pct,
+    balance_reserve_pct:r.balance_reserve_pct, max_daily_loss_pct:r.max_daily_loss_pct,
+    taker_fee_pct:f.taker_fee_pct, max_funding_rate_pct:f.max_funding_rate_pct,
+    funding_periods_estimate:f.funding_periods_estimate,
+    trailing_stop_activation_pct:p.trailing_stop_activation_pct,
+    trailing_stop_distance_pct:p.trailing_stop_distance_pct,
+    trailing_stop_min_move_pct:p.trailing_stop_min_move_pct||0.3,
+    breakeven_trigger_pct:p.breakeven_trigger_pct,
+    max_position_hold_hours:p.max_position_hold_hours,
+    entry_max_deviation_pct:p.entry_max_deviation_pct,
+    reversal_exit_pct:p.reversal_exit_pct,
+    reversal_exit_min_hours:p.reversal_exit_min_hours||2.0,
+    signal_score_threshold:sg.signal_score_threshold,
+    watchlist_confirmations:sg.watchlist_confirmations,
+    signal_cooldown_minutes:sg.signal_cooldown_minutes||30,
+    research_min_score:sg.research_min_score||6.0,
+    research_min_mtf_alignment:sg.research_min_mtf_alignment||0.67,
+    min_ml_confidence:sg.min_ml_confidence||0.60,
+    min_volume_usdt:sg.min_volume_usdt,
+    max_signals_per_scan:sg.max_signals_per_scan,
+  };
+  Object.keys(nf).forEach(function(k){
+    var el=document.getElementById('bc-'+k);
+    if(el&&nf[k]!=null)el.value=nf[k];
+  });
+  // Boolean toggles — read from API, fallback true for safety-on toggles
+  var bf={
+    dry_run:mo.dry_run, training_mode:mo.training_mode, binance_testnet:mo.binance_testnet,
+    trailing_stop_enabled:mo.trailing_stop_enabled!=null?mo.trailing_stop_enabled:true,
+    breakeven_stop_enabled:mo.breakeven_stop_enabled!=null?mo.breakeven_stop_enabled:true,
+    reversal_exit_enabled:mo.reversal_exit_enabled!=null?mo.reversal_exit_enabled:true,
+    strategy_discovery_enabled:mo.strategy_discovery_enabled!=null?mo.strategy_discovery_enabled:true,
+  };
+  Object.keys(bf).forEach(function(k){
+    var el=document.getElementById('bc-'+k);
+    if(el)el.checked=!!bf[k];
+  });
+  // Exchange select
+  var excEl=document.getElementById('bc-exchange');
+  if(excEl)excEl.value=(mo.exchange||'binance').toLowerCase();
+  // Training mode warning
+  var tw=document.getElementById('bcfg-train');
+  if(tw)tw.style.display=mo.training_mode?'block':'none';
+}
+
+function bcfgTab(btn,tab){
+  document.querySelectorAll('.bcfg-tb').forEach(function(b){b.classList.remove('ac');});
+  document.querySelectorAll('.bcfg-pn').forEach(function(p){p.style.display='none';});
+  btn.classList.add('ac');
+  var pn=document.getElementById('bcfg-'+tab);
+  if(pn)pn.style.display='block';
+}
+
+async function saveBotCfg(){
+  var msg=document.getElementById('bcfg-msg');
+  if(msg){msg.style.color='var(--mut)';msg.textContent='Saving...';}
+  // Collect numeric inputs
+  var payload={};
+  document.querySelectorAll('[id^="bc-"]').forEach(function(el){
+    var k=el.id.replace('bc-','');
+    if(el.type==='checkbox'){payload[k]=el.checked;}
+    else if(el.tagName==='SELECT'){payload[k]=el.value;}
+    else if(el.value!==''){
+      var v=parseFloat(el.value);
+      payload[k]=isNaN(v)?el.value:v;
+    }
+  });
+  var d=await ap('/api/bot-config/save','POST',payload);
+  if(d.success){
+    toast(d.message,'ok');
+    if(msg){msg.style.color='var(--accent)';msg.textContent=d.message;}
+    if(d.restart_required){
+      var w=document.getElementById('bcfg-train');if(w)w.style.display='block';
+      toast('Restart required for exchange/testnet changes','inf');
+    }
+    // Refresh training warning banner live
+    var tmEl=document.getElementById('bc-training_mode');
+    var tw=document.getElementById('bcfg-train');
+    if(tw&&tmEl)tw.style.display=tmEl.checked?'block':'none';
+  } else {
+    toast(d.message||'Save failed','err');
+    if(msg){msg.style.color='#ff4466';msg.textContent=d.message||'Save failed';}
   }
 }
 
@@ -2010,10 +2201,11 @@ async function lHistory(){
     var s=d.stats||{};
     el.innerHTML=[
       ['Closed Trades',s.closed||0,''],
-      ['Wins',s.wins||0,'pos'],
-      ['Losses',s.losses||0,'neg'],
       ['Win Rate',(s.win_rate_pct||0).toFixed(1)+'%',(s.win_rate_pct||0)>=50?'pos':'neg'],
       ['Total PnL',(s.total_pnl>=0?'+':'')+'$'+Math.abs(s.total_pnl||0).toFixed(2),(s.total_pnl||0)>=0?'pos':'neg'],
+      ['Gross Profit','+$'+(s.gross_profit||0).toFixed(2),'pos'],
+      ['Gross Loss','-$'+Math.abs(s.gross_loss||0).toFixed(2),'neg'],
+      ['Total Funding','-$'+(s.total_funding_fees||0).toFixed(4),'neg'],
     ].map(function(x){return '<div class="sc"><div class="sl">'+x[0]+'</div><div class="sv '+x[2]+'">'+x[1]+'</div></div>';}).join('');
   }
 }
@@ -2058,7 +2250,7 @@ function _filterHistory(){
   });
   var cnt=document.getElementById('hist-count');if(cnt)cnt.textContent=rows.length+' trades';
   var tb=document.getElementById('hist-tb');if(!tb)return;
-  if(!rows.length){tb.innerHTML='<tr><td colspan="13" style="text-align:center;color:var(--mut);padding:18px">No trades matching filter</td></tr>';return;}
+  if(!rows.length){tb.innerHTML='<tr><td colspan="14" style="text-align:center;color:var(--mut);padding:18px">No trades matching filter</td></tr>';return;}
   tb.innerHTML=rows.map(function(t,i){
     var dir2=(t.direction||'LONG').toLowerCase();
     var pnl=t.pnl_usdt||0;
@@ -2070,6 +2262,10 @@ function _filterHistory(){
       var margin=(t.entry_price*t.quantity)/t.leverage;
       if(margin>0)pnlPct=(pnl/margin*100).toFixed(2)+'%';
     }
+    // Funding fee
+    var ff=t.funding_fee_usdt||0;
+    var ffStr=ff>0?'-$'+ff.toFixed(4):'$0';
+    var ffCls=ff>0?'tn':'';
     // Duration
     var dur='--';
     if(t.opened_at&&t.closed_at){
@@ -2086,6 +2282,7 @@ function _filterHistory(){
       +'<td>'+(t.exit_price||0).toFixed(4)+'</td>'
       +'<td class="'+pc+'" style="font-weight:700">'+ps+pnl.toFixed(2)+'</td>'
       +'<td class="'+pc+'">'+pnlPct+'</td>'
+      +'<td class="'+ffCls+'" style="font-size:.74rem">'+ffStr+'</td>'
       +'<td style="color:var(--mut);font-size:.75rem">'+dur+'</td>'
       +'<td>'+(t.signal_score||'--')+'</td>'
       +'<td style="color:var(--a2);font-weight:600">'+lev+'</td>'
@@ -2099,10 +2296,10 @@ function _filterHistory(){
 function _exportCSV(){
   var rows=_rawHistData;
   if(!rows.length){toast('No trade data to export','inf');return;}
-  var hdr=['ID','Symbol','Direction','Entry','Exit','PnL_USDT','Leverage','Score','Strategy','Exchange','Opened','Closed'];
+  var hdr=['ID','Symbol','Direction','Entry','Exit','PnL_USDT','Funding_Fee_USDT','Leverage','Score','Strategy','Exchange','Opened','Closed'];
   var lines=[hdr.join(',')].concat(rows.map(function(t){
     return [t.id,t.symbol,t.direction,(t.entry_price||0).toFixed(6),(t.exit_price||0).toFixed(6),(t.pnl_usdt||0).toFixed(4),
-            t.leverage||'',t.signal_score||'',t.strategy||'',t.exchange||'',t.opened_at||'',t.closed_at||''].join(',');
+            (t.funding_fee_usdt||0).toFixed(4),t.leverage||'',t.signal_score||'',t.strategy||'',t.exchange||'',t.opened_at||'',t.closed_at||''].join(',');
   }));
   var blob=new Blob([lines.join('\n')],{type:'text/csv'});
   var a=document.createElement('a');a.href=URL.createObjectURL(blob);

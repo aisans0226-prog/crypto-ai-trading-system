@@ -103,10 +103,10 @@ class MarketDataEngine:
         )
         df = pd.DataFrame(raw, columns=KLINE_COLUMNS)
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-        for col in ["open", "high", "low", "close", "volume", "quote_volume"]:
+        for col in ["open", "high", "low", "close", "volume", "quote_volume", "taker_buy_base"]:
             df[col] = df[col].astype(float)
         df.set_index("timestamp", inplace=True)
-        return df[["open", "high", "low", "close", "volume", "quote_volume"]]
+        return df[["open", "high", "low", "close", "volume", "quote_volume", "taker_buy_base"]]
 
     async def get_klines_bybit(
         self, symbol: str, interval: str = "15", limit: int = 200,

@@ -164,6 +164,9 @@ class Settings(BaseSettings):
     # Auto Strategy Discovery
     strategy_discovery_enabled: bool = True  # if False, falls back to first-match (legacy)
 
+    # Paper trading flag — also settable via --dry-run CLI arg (CLI takes precedence)
+    dry_run: bool = False
+
     # ── Training Mode ─────────────────────────────────────────────────────────
     # Set TRAINING_MODE=true in .env to maximise trade frequency and collect ML data.
     # ALL thresholds are relaxed — intended for use with --dry-run.

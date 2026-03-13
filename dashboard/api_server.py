@@ -196,6 +196,7 @@ async def get_metrics():
             "total_trades": 0, "open_trades": 0, "wins_count": 0, "losses_count": 0,
             "win_rate": 0.0, "profit_factor": 0.0, "max_drawdown_pct": 0.0, "daily_pnl": 0.0,
             "total_pnl": 0.0, "balance": settings.account_balance_usdt, "pnl_trend": [],
+            "gross_profit": 0.0, "gross_loss": 0.0, "total_funding_fees": 0.0,
         }
     return await state.portfolio_manager.calculate_metrics()
 
@@ -214,7 +215,7 @@ async def get_advanced_stats():
         "pnl_by_hour": [], "score_distribution": [],
         "total_wins": 0, "total_losses": 0, "gross_profit": 0.0, "gross_loss": 0.0,
         "win_rate_by_hour": [], "win_rate_by_weekday": [],
-        "fee_impact_pct": 0.0,
+        "fee_impact_pct": 0.0, "total_funding_fees": 0.0,
     }
     if not state.portfolio_manager:
         return empty
@@ -462,6 +463,7 @@ async def get_advanced_stats():
         "total_wins":           len(win_pnls),
         "total_losses":         len(loss_pnls),
         "fee_impact_pct":       fee_impact_pct,
+        "total_funding_fees":   round(sum(t.funding_fee_usdt or 0.0 for t in trades), 4),
         "pnl_by_hour":          pnl_by_hour,
         "win_rate_by_hour":     win_rate_by_hour,
         "win_rate_by_weekday":  win_rate_by_wd,
@@ -701,22 +703,23 @@ async def get_trades(limit: int = 100, status: str = "all"):
 
     rows = [
         {
-            "id":           t.id,
-            "symbol":       t.symbol,
-            "direction":    t.direction,
-            "entry_price":  t.entry_price,
-            "exit_price":   t.exit_price,
-            "quantity":     t.quantity,
-            "leverage":     t.leverage,
-            "stop_loss":    t.stop_loss,
-            "take_profit":  t.take_profit,
-            "pnl_usdt":     t.pnl_usdt,
-            "status":       t.status,
-            "exchange":     t.exchange,
-            "signal_score": t.signal_score,
-            "strategy":     getattr(t, "strategy_name", None),
-            "opened_at":    t.opened_at.isoformat() if t.opened_at else None,
-            "closed_at":    t.closed_at.isoformat() if t.closed_at else None,
+            "id":               t.id,
+            "symbol":           t.symbol,
+            "direction":        t.direction,
+            "entry_price":      t.entry_price,
+            "exit_price":       t.exit_price,
+            "quantity":         t.quantity,
+            "leverage":         t.leverage,
+            "stop_loss":        t.stop_loss,
+            "take_profit":      t.take_profit,
+            "pnl_usdt":         t.pnl_usdt,
+            "funding_fee_usdt": round(t.funding_fee_usdt or 0.0, 4),
+            "status":           t.status,
+            "exchange":         t.exchange,
+            "signal_score":     t.signal_score,
+            "strategy":         getattr(t, "strategy_name", None),
+            "opened_at":        t.opened_at.isoformat() if t.opened_at else None,
+            "closed_at":        t.closed_at.isoformat() if t.closed_at else None,
         }
         for t in trades
     ]
@@ -724,13 +727,16 @@ async def get_trades(limit: int = 100, status: str = "all"):
     closed = [r for r in rows if r["status"] == "closed"]
     wins   = [r for r in closed if r["pnl_usdt"] and r["pnl_usdt"] > 0]
     stats  = {
-        "total":        len(rows),
-        "open":         len([r for r in rows if r["status"] == "open"]),
-        "closed":       len(closed),
-        "wins":         len(wins),
-        "losses":       len(closed) - len(wins),
-        "win_rate_pct": round(len(wins) / len(closed) * 100, 1) if closed else 0,
-        "total_pnl":    round(sum(r["pnl_usdt"] or 0 for r in closed), 2),
+        "total":              len(rows),
+        "open":               len([r for r in rows if r["status"] == "open"]),
+        "closed":             len(closed),
+        "wins":               len(wins),
+        "losses":             len(closed) - len(wins),
+        "win_rate_pct":       round(len(wins) / len(closed) * 100, 1) if closed else 0,
+        "total_pnl":          round(sum(r["pnl_usdt"] or 0 for r in closed), 2),
+        "total_funding_fees": round(sum(r["funding_fee_usdt"] or 0 for r in closed), 4),
+        "gross_profit":       round(sum(r["pnl_usdt"] for r in wins), 2) if wins else 0.0,
+        "gross_loss":         round(sum(r["pnl_usdt"] for r in closed if (r["pnl_usdt"] or 0) <= 0), 2),
     }
     return {"trades": rows, "stats": stats}
 
@@ -820,10 +826,12 @@ async def get_bot_config():
         "position_mgmt": {
             "trailing_stop_activation_pct": getattr(_s, "trailing_stop_activation_pct", 3.0),
             "trailing_stop_distance_pct":   getattr(_s, "trailing_stop_distance_pct", 1.0),
+            "trailing_stop_min_move_pct":   getattr(_s, "trailing_stop_min_move_pct", 0.3),
             "breakeven_trigger_pct":        getattr(_s, "breakeven_trigger_pct", 2.0),
             "max_position_hold_hours":      getattr(_s, "max_position_hold_hours", 18.0),
             "entry_max_deviation_pct":      getattr(_s, "entry_max_deviation_pct", 0.8),
             "reversal_exit_pct":            getattr(_s, "reversal_exit_pct", 2.0),
+            "reversal_exit_min_hours":      getattr(_s, "reversal_exit_min_hours", 2.0),
         },
         "signals": {
             "signal_score_threshold":       _s.effective_signal_score_threshold,
@@ -836,14 +844,130 @@ async def get_bot_config():
             "max_signals_per_scan":         getattr(_s, "max_signals_per_scan", 150),
         },
         "mode": {
-            "dry_run":         getattr(_s, "dry_run", True),
-            "training_mode":   getattr(_s, "training_mode", False),
-            "exchange":        getattr(_s, "exchange", "binance"),
-            "binance_testnet": getattr(_s, "binance_testnet", False),
-            "ai_enabled":      getattr(_s, "ai_analysis_enabled", False),
-            "ai_provider":     getattr(_s, "ai_provider", ""),
-            "ai_model":        getattr(_s, "ai_model", ""),
+            "dry_run":                     getattr(_s, "dry_run", True),
+            "training_mode":               getattr(_s, "training_mode", False),
+            "exchange":                    getattr(_s, "exchange", "binance"),
+            "binance_testnet":             getattr(_s, "binance_testnet", False),
+            "trailing_stop_enabled":       getattr(_s, "trailing_stop_enabled", True),
+            "breakeven_stop_enabled":      getattr(_s, "breakeven_stop_enabled", True),
+            "reversal_exit_enabled":       getattr(_s, "reversal_exit_enabled", True),
+            "strategy_discovery_enabled":  getattr(_s, "strategy_discovery_enabled", True),
+            "ai_enabled":                  getattr(_s, "ai_analysis_enabled", False),
+            "ai_provider":                 getattr(_s, "ai_provider", ""),
+            "ai_model":                    getattr(_s, "ai_model", ""),
         },
+    }
+
+
+# Fields that require a restart to take effect (exchange plumbing, network)
+_RESTART_REQUIRED = {"exchange", "binance_testnet"}
+
+# payload_key → ENV_VAR_NAME  (only editable fields — no secrets here)
+_CFG_KEY_MAP = {
+    "risk_per_trade_pct":           "RISK_PER_TRADE_PCT",
+    "max_leverage":                 "MAX_LEVERAGE",
+    "max_open_trades":              "MAX_OPEN_TRADES",
+    "max_daily_trades":             "MAX_DAILY_TRADES",
+    "min_risk_reward_ratio":        "MIN_RISK_REWARD_RATIO",
+    "max_stop_loss_pct":            "MAX_STOP_LOSS_PCT",
+    "min_stop_loss_pct":            "MIN_STOP_LOSS_PCT",
+    "max_position_size_pct":        "MAX_POSITION_SIZE_PCT",
+    "balance_reserve_pct":          "BALANCE_RESERVE_PCT",
+    "max_daily_loss_pct":           "MAX_DAILY_LOSS_PCT",
+    "taker_fee_pct":                "TAKER_FEE_PCT",
+    "max_funding_rate_pct":         "MAX_FUNDING_RATE_PCT",
+    "funding_periods_estimate":     "FUNDING_PERIODS_ESTIMATE",
+    "trailing_stop_enabled":        "TRAILING_STOP_ENABLED",
+    "trailing_stop_activation_pct": "TRAILING_STOP_ACTIVATION_PCT",
+    "trailing_stop_distance_pct":   "TRAILING_STOP_DISTANCE_PCT",
+    "trailing_stop_min_move_pct":   "TRAILING_STOP_MIN_MOVE_PCT",
+    "breakeven_stop_enabled":       "BREAKEVEN_STOP_ENABLED",
+    "breakeven_trigger_pct":        "BREAKEVEN_TRIGGER_PCT",
+    "max_position_hold_hours":      "MAX_POSITION_HOLD_HOURS",
+    "entry_max_deviation_pct":      "ENTRY_MAX_DEVIATION_PCT",
+    "reversal_exit_enabled":        "REVERSAL_EXIT_ENABLED",
+    "reversal_exit_pct":            "REVERSAL_EXIT_PCT",
+    "reversal_exit_min_hours":      "REVERSAL_EXIT_MIN_HOURS",
+    "signal_score_threshold":       "SIGNAL_SCORE_THRESHOLD",
+    "min_ml_confidence":            "MIN_ML_CONFIDENCE",
+    "watchlist_confirmations":      "WATCHLIST_CONFIRMATIONS",
+    "signal_cooldown_minutes":      "SIGNAL_COOLDOWN_MINUTES",
+    "research_min_score":           "RESEARCH_MIN_SCORE",
+    "research_min_mtf_alignment":   "RESEARCH_MIN_MTF_ALIGNMENT",
+    "min_volume_usdt":              "MIN_VOLUME_USDT",
+    "max_signals_per_scan":         "MAX_SIGNALS_PER_SCAN",
+    "dry_run":                      "DRY_RUN",
+    "training_mode":                "TRAINING_MODE",
+    "exchange":                     "EXCHANGE",
+    "binance_testnet":              "BINANCE_TESTNET",
+    "strategy_discovery_enabled":   "STRATEGY_DISCOVERY_ENABLED",
+}
+
+
+@app.post("/api/bot-config/save")
+async def save_bot_config(request: Request):
+    """Persist bot configuration changes to .env and apply runtime where safe."""
+    import re
+    payload = await request.json()
+
+    env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
+    lines: list[str] = []
+    if os.path.exists(env_path):
+        with open(env_path, "r", encoding="utf-8") as fh:
+            lines = fh.readlines()
+
+    def _set(lines: list[str], key: str, value: str) -> list[str]:
+        pat = re.compile(rf"^\s*{re.escape(key)}\s*=", re.IGNORECASE)
+        replaced = False
+        result = []
+        for ln in lines:
+            if pat.match(ln):
+                result.append(f"{key}={value}\n")
+                replaced = True
+            else:
+                result.append(ln)
+        if not replaced:
+            result.append(f"{key}={value}\n")
+        return result
+
+    changed = 0
+    restart_needed = False
+    for key, env_var in _CFG_KEY_MAP.items():
+        if key not in payload:
+            continue
+        val = payload[key]
+        if isinstance(val, bool):
+            val = str(val).lower()
+        lines = _set(lines, env_var, str(val))
+        changed += 1
+        if key in _RESTART_REQUIRED:
+            restart_needed = True
+
+    try:
+        with open(env_path, "w", encoding="utf-8") as fh:
+            fh.writelines(lines)
+    except Exception as exc:
+        logger.warning("bot-config/save failed writing .env: {}", exc)
+        return {"success": False, "message": f"Failed to write .env: {exc}"}
+
+    # Apply runtime — safe numeric/bool fields (no exchange/network fields)
+    _s = settings
+    for key in payload:
+        if key in _RESTART_REQUIRED or key not in _CFG_KEY_MAP:
+            continue
+        try:
+            if hasattr(_s, key):
+                field_type = type(getattr(_s, key))
+                setattr(_s, key, field_type(payload[key]))
+        except Exception:
+            pass
+
+    suffix = " — restart required for exchange/testnet changes" if restart_needed else " — applied immediately"
+    return {
+        "success": True,
+        "message": f"Saved {changed} settings{suffix}",
+        "restart_required": restart_needed,
+        "changed": changed,
     }
 
 

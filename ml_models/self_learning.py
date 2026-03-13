@@ -132,7 +132,7 @@ class SelfLearningEngine:
             if self._retrain_count == 0 and len(self._samples_y) >= 30:
                 logger.info("SelfLearning: {} labeled samples found, scheduling initial retrain",
                             len(self._samples_y))
-                asyncio.get_event_loop().create_task(self._retrain())
+                asyncio.get_running_loop().create_task(self._retrain())
         except Exception as exc:
             logger.error("SelfLearning.initialize error (DB not available?): {}", exc)
 

@@ -1353,7 +1353,23 @@ class TradingSystem:
         updates research outcome, syncs risk counter, and broadcasts the WS event.
         Callers are responsible for any Telegram alert and log message.
         """
-        await self._portfolio.close_position(symbol, exit_price, pnl)
+        # Estimate funding fees based on actual hold duration before positions are cleared
+        pos = self._portfolio._open_positions.get(symbol, {})
+        meta_snap = self._position_meta.get(symbol, {})
+        funding_fee = 0.0
+        entry = pos.get("entry_price", 0.0) or 0.0
+        qty = pos.get("quantity", 0.0) or 0.0
+        opened_ts = meta_snap.get("opened_at", 0) or 0
+        if entry > 0 and qty > 0 and opened_ts > 0:
+            hours_held = (datetime.utcnow().timestamp() - opened_ts) / 3600
+            funding_periods = max(0, int(hours_held / 8))   # complete 8 h periods only
+            if funding_periods > 0:
+                notional = entry * qty
+                funding_fee = round(
+                    notional * (settings.max_funding_rate_pct / 100) * funding_periods, 4
+                )
+
+        await self._portfolio.close_position(symbol, exit_price, pnl, funding_fee)
         # Release allocated margin BEFORE clearing meta so the risk manager's
         # free-balance is accurate for the next position sizing calculation.
         margin_used = self._position_meta.get(symbol, {}).get("margin_used", 0.0)

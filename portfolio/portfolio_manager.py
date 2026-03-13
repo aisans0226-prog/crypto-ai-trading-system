@@ -12,7 +12,7 @@ from typing import Dict, List, Optional
 from loguru import logger
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker
-from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, Text
+from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, Text, text
 import aioredis
 
 from config import settings
@@ -36,6 +36,7 @@ class TradeRecord(Base):
     stop_loss = Column(Float, nullable=False)
     take_profit = Column(Float, nullable=False)
     pnl_usdt = Column(Float, default=0.0)
+    funding_fee_usdt = Column(Float, default=0.0)   # estimated funding fees paid during hold
     status = Column(String(10), default="open")   # open | closed | cancelled
     exchange = Column(String(10), default="binance")
     order_id = Column(String(50), nullable=True)
@@ -78,6 +79,10 @@ class PortfolioManager:
     async def start(self) -> None:
         async with self._engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            # Idempotent migration: add funding_fee_usdt if it doesn't exist yet
+            await conn.execute(text(
+                "ALTER TABLE trades ADD COLUMN IF NOT EXISTS funding_fee_usdt FLOAT DEFAULT 0.0"
+            ))
         try:
             self._redis = await aioredis.from_url(settings.redis_url)
             await self._redis.ping()
@@ -174,7 +179,7 @@ class PortfolioManager:
                 )
 
     async def close_position(
-        self, symbol: str, exit_price: float, pnl: float
+        self, symbol: str, exit_price: float, pnl: float, funding_fee: float = 0.0
     ) -> None:
         async with self._session_factory() as session:
             from sqlalchemy import update
@@ -187,6 +192,7 @@ class PortfolioManager:
                 .values(
                     exit_price=exit_price,
                     pnl_usdt=pnl,
+                    funding_fee_usdt=round(funding_fee, 4),
                     status="closed",
                     closed_at=datetime.utcnow(),
                 )
@@ -246,6 +252,9 @@ class PortfolioManager:
             "total_pnl": 0.0,
             "balance": self._balance,
             "pnl_trend": [],
+            "gross_profit": 0.0,
+            "gross_loss": 0.0,
+            "total_funding_fees": 0.0,
         }
         if not trades:
             return base
@@ -301,6 +310,9 @@ class PortfolioManager:
             "total_pnl": round(sum(pnls), 2),
             "balance": self._balance,
             "pnl_trend": pnl_trend,
+            "gross_profit": round(gross_profit, 2),
+            "gross_loss": round(gross_loss, 2),
+            "total_funding_fees": round(sum(t.funding_fee_usdt or 0.0 for t in trades), 4),
         }
 
     async def save_performance_snapshot(self) -> None:
