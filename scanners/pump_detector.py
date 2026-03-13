@@ -54,12 +54,14 @@ class PumpDetector:
                 signals.append("volume_spike")
 
             # ── Price momentum (direction-aligned) ───────────────────────
-            pct_change = (close.iloc[-1] - close.iloc[-2]) / close.iloc[-2] * 100
-            price_ok = (direction == "LONG" and pct_change >= 3.0) or \
-                       (direction == "SHORT" and pct_change <= -3.0)
-            if price_ok:
-                score += 1
-                signals.append("strong_price_move")
+            prev_close = close.iloc[-2] if len(close) >= 2 else None
+            if prev_close and prev_close != 0:
+                pct_change = (close.iloc[-1] - prev_close) / prev_close * 100
+                price_ok = (direction == "LONG" and pct_change >= 3.0) or \
+                           (direction == "SHORT" and pct_change <= -3.0)
+                if price_ok:
+                    score += 1
+                    signals.append("strong_price_move")
 
             # ── RSI directional gate ──────────────────────────────────────
             rsi_series = ta.momentum.RSIIndicator(close=close, window=14).rsi()
@@ -86,17 +88,20 @@ class PumpDetector:
                 oi_now = self._oi_bulk.get(symbol)
                 if oi_now is None:
                     oi_now = await self._engine.get_open_interest_binance(symbol)
+                # Only write to cache when we have a valid value — prevents None
+                # from poisoning the cache and causing TypeError on the next cycle.
                 oi_prev = self._oi_cache.get(symbol, -1)
-                self._oi_cache[symbol] = oi_now
-                if oi_prev < 0:
-                    if oi_now > 0:
-                        score += 1
-                        signals.append("oi_active")
-                elif oi_prev > 0 and oi_now > oi_prev:
-                    oi_delta_pct = (oi_now - oi_prev) / oi_prev * 100
-                    if oi_delta_pct >= 0.5:
-                        score += 1
-                        signals.append("oi_increase")
+                if oi_now is not None:
+                    self._oi_cache[symbol] = oi_now
+                    if oi_prev < 0 or oi_prev is None:
+                        if oi_now > 0:
+                            score += 1
+                            signals.append("oi_active")
+                    elif oi_prev > 0 and oi_now > oi_prev:
+                        oi_delta_pct = (oi_now - oi_prev) / oi_prev * 100
+                        if oi_delta_pct >= 0.5:
+                            score += 1
+                            signals.append("oi_increase")
             except Exception:
                 pass
 

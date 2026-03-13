@@ -49,12 +49,14 @@ class WhaleTracker:
             # ── Absorption pattern (high volume, low price change = smart money) ──
             # Direction-agnostic: whales accumulate (long) OR distribute (short) silently
             recent = df.tail(5)
-            avg_vol = df["volume"].rolling(20).mean().iloc[-1]
+            avg_vol = df["volume"].rolling(20, min_periods=5).mean().iloc[-1]
             bar_count = 0
-            for _, row in recent.iterrows():
-                candle_range_pct = (row["high"] - row["low"]) / row["low"] * 100
-                if row["volume"] > avg_vol * 1.5 and candle_range_pct < 1.5:
-                    bar_count += 1
+            if not pd.isna(avg_vol) and avg_vol > 0:
+                for _, row in recent.iterrows():
+                    low = max(float(row["low"]), 1e-10)  # guard div-by-zero on malformed data
+                    candle_range_pct = (row["high"] - low) / low * 100
+                    if row["volume"] > avg_vol * 1.5 and candle_range_pct < 1.5:
+                        bar_count += 1
             if bar_count >= 2:
                 score += 2
                 signals.append("whale_absorption")

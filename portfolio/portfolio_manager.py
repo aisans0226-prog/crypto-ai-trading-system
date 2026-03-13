@@ -84,9 +84,11 @@ class PortfolioManager:
             await conn.execute(text(
                 "ALTER TABLE trades ADD COLUMN IF NOT EXISTS funding_fee_usdt FLOAT DEFAULT 0.0"
             ))
+        _redis_tmp = None
         try:
-            self._redis = await aioredis.from_url(settings.redis_url)
-            await self._redis.ping()
+            _redis_tmp = await aioredis.from_url(settings.redis_url)
+            await _redis_tmp.ping()
+            self._redis = _redis_tmp
             logger.info("PortfolioManager started (Redis connected)")
             # Restore manual balance override if it was set before restart
             manual = await self._redis.get("portfolio:manual_balance")
@@ -98,6 +100,12 @@ class PortfolioManager:
                 logger.info("Restored manual balance override: ${:.2f}", self._balance)
         except Exception as exc:
             logger.warning("Redis unavailable ({}), running in-memory mode", exc)
+            # Close the partially-created connection so no sockets are leaked
+            if _redis_tmp is not None:
+                try:
+                    await _redis_tmp.aclose()
+                except Exception:
+                    pass
             self._redis = None
         # Re-sync in-memory + Redis from DB — prevents stale state across restarts
         await self._reload_open_positions()
@@ -184,7 +192,7 @@ class PortfolioManager:
         async with self._session_factory() as session:
             record = TradeRecord(**{
                 k: v for k, v in trade_data.items()
-                if k in TradeRecord.__table__.columns.keys()
+                if k in TradeRecord.__table__.columns.keys() and k != "id"
             })
             session.add(record)
             await session.commit()
@@ -290,7 +298,7 @@ class PortfolioManager:
         if not trades:
             return base
 
-        pnls = [t.pnl_usdt for t in trades]
+        pnls = [t.pnl_usdt for t in trades if t.pnl_usdt is not None]
         wins = [p for p in pnls if p > 0]
         losses = [p for p in pnls if p <= 0]
 
@@ -466,8 +474,10 @@ class PortfolioManager:
                 for s in all_snaps
             ],
         }
-        with open(backup_file, "w", encoding="utf-8") as f:
-            json.dump(backup_data, f, indent=2)
+        backup_str = json.dumps(backup_data, indent=2)
+        await asyncio.get_running_loop().run_in_executor(
+            None, lambda: open(backup_file, "w", encoding="utf-8").write(backup_str)
+        )
 
         # Delete closed/cancelled trades + all performance snapshots
         async with self._session_factory() as session:

@@ -62,6 +62,7 @@ class SelfLearningEngine:
         self._pending: Dict[str, dict] = {}            # trade_id → {symbol, features, seq, ts}
         self._samples_X: List[np.ndarray] = []         # flat feature vectors for XGBoost
         self._samples_seq: List[np.ndarray] = []       # 60-row sequences for LSTM (memory-only)
+        self._samples_seq_y: List[int] = []            # labels aligned 1:1 with _samples_seq
         self._samples_y: List[int] = []
         self._coin_stats: Dict[str, dict] = {}         # symbol → {wins, losses, total, win_rate}
         self._new_since_retrain: int = 0
@@ -127,9 +128,15 @@ class SelfLearningEngine:
             # Remove stale unlabeled samples older than 24h (scan-loop zombies)
             await db.cleanup_stale_ml_samples(hours=24)
 
-            # Trigger initial retrain if we have enough data but model was never trained
-            # (handles the case where _new_since_retrain reset to 0 after restart)
-            if self._retrain_count == 0 and len(self._samples_y) >= 30:
+            # Mark model as trained if the model file exists on disk — prevents the dashboard
+            # showing "Untrained" after a restart when the model was already trained.
+            if (MODEL_DIR / "xgb_model.pkl").exists():
+                self._model_trained = True
+
+            # Trigger initial retrain ONLY when model file is missing but we have enough data.
+            # Skip if model already exists — avoids wasteful retrain on every VPS restart.
+            model_exists = (MODEL_DIR / "xgb_model.pkl").exists()
+            if self._retrain_count == 0 and len(self._samples_y) >= 30 and not model_exists:
                 logger.info("SelfLearning: {} labeled samples found, scheduling initial retrain",
                             len(self._samples_y))
                 asyncio.get_running_loop().create_task(self._retrain())
@@ -172,12 +179,18 @@ class SelfLearningEngine:
         if pending is None:
             return
 
-        label = 1 if pnl > 0 else 0
+        label = 1 if pnl >= 0 else 0   # breakeven treated as win, not loss
         self._samples_X.append(pending["features"])
         self._samples_y.append(label)
-        # Register LSTM sequence if available (stored in-memory during this session)
+        # Register LSTM sequence only when a full 60-bar history was available.
+        # Maintain _samples_seq_y in lock-step so LSTM labels are always aligned.
         if "seq" in pending and len(pending["seq"]) == 60:
             self._samples_seq.append(pending["seq"])
+            self._samples_seq_y.append(label)
+            # Trim to 6000 to cap memory usage (~36 MB at worst)
+            if len(self._samples_seq) > 6000:
+                self._samples_seq   = self._samples_seq[-5000:]
+                self._samples_seq_y = self._samples_seq_y[-5000:]
         self._new_since_retrain += 1
 
         # Update in-memory per-coin stats
@@ -265,8 +278,11 @@ class SelfLearningEngine:
                         len(y), sum(y) / len(y) * 100)
 
             # ── LSTM retrain (requires TF and in-session sequences) ───────
+            # Uses _samples_seq_y which is kept in lock-step with _samples_seq,
+            # preventing the label-misalignment bug that arose from trades with
+            # no 60-bar history interleaveing with ones that do have sequences.
             if TF_AVAILABLE and len(self._samples_seq) >= 30:
-                self._do_retrain_lstm(y[-len(self._samples_seq):])
+                self._do_retrain_lstm(np.array(self._samples_seq_y[-5000:]))
 
         except Exception as exc:
             logger.error("Retraining failed: {}", exc)
@@ -301,9 +317,9 @@ class SelfLearningEngine:
         wins  = sum(self._samples_y) if self._samples_y else 0
         overall_wr = round(wins / total * 100, 2) if total else 0
 
-        # Recent win rates (last 10 / 20 samples)
-        last10 = self._samples_y[-10:] if len(self._samples_y) >= 5 else []
-        last20 = self._samples_y[-20:] if len(self._samples_y) >= 10 else []
+        # Recent win rates — use correct threshold to avoid partial-window mislabeling
+        last10 = self._samples_y[-10:] if len(self._samples_y) >= 10 else []
+        last20 = self._samples_y[-20:] if len(self._samples_y) >= 20 else []
         wr10 = round(sum(last10) / len(last10) * 100, 1) if last10 else None
         wr20 = round(sum(last20) / len(last20) * 100, 1) if last20 else None
 
@@ -347,13 +363,13 @@ class SelfLearningEngine:
         return result
 
     def get_feature_importance(self, top_n: int = 10) -> List[dict]:
-        """Return top-N feature importances from the saved XGBoost model (if trained)."""
-        if not XGB_AVAILABLE or not self._model_trained:
+        """Return top-N feature importances from the saved XGBoost model (if trained).
+        Uses model file existence as gate — _model_trained flag is not required so this
+        works correctly after a restart where the model was trained in a previous session."""
+        model_path = MODEL_DIR / "xgb_model.pkl"
+        if not XGB_AVAILABLE or not model_path.exists():
             return []
         try:
-            model_path = MODEL_DIR / "xgb_model.pkl"
-            if not model_path.exists():
-                return []
             import pickle as _pkl
             with open(model_path, "rb") as fh:
                 model = _pkl.load(fh)

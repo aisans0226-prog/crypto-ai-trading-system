@@ -83,9 +83,16 @@ def _make_bot_status_payload() -> dict:
 
 
 async def broadcast(event: str, payload: dict) -> None:
-    msg = json.dumps({"type": event, "data": payload, "ts": datetime.utcnow().isoformat()})
+    try:
+        msg = json.dumps(
+            {"type": event, "data": payload, "ts": datetime.utcnow().isoformat()},
+            default=str,  # serialize datetime/Decimal/etc. as strings instead of crashing
+        )
+    except Exception as exc:
+        logger.debug("broadcast serialise error (event={}): {}", event, exc)
+        return
     dead: List[WebSocket] = []
-    for ws in state.connected_ws:
+    for ws in list(state.connected_ws):  # snapshot — avoids RuntimeError on concurrent connect/disconnect
         try:
             await ws.send_text(msg)
         except Exception:
@@ -119,8 +126,8 @@ async def _fetch_all_prices() -> dict:
                 if resp.status == 200:
                     data = await resp.json()
                     return {item["symbol"]: float(item["price"]) for item in data}
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Binance price fetch failed: {}", exc)
 
     # Bybit fallback — covers fully geo-blocked Binance or Bybit-exchange deployments
     try:
@@ -141,8 +148,8 @@ async def _fetch_all_prices() -> dict:
                             except Exception:
                                 pass
                     return prices
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Bybit price fetch failed: {}", exc)
 
     return {}
 
@@ -170,10 +177,10 @@ async def _enrich_positions(positions: Dict[str, dict], prices: Optional[dict] =
         qty       = pos.get("quantity", 0)
         entry     = pos.get("entry_price", 0) or 0
         leverage  = pos.get("leverage", 1) or 1
-        size      = pos.get("position_size_usdt") or (qty * entry) or 1
+        size      = pos.get("position_size_usdt") or (qty * entry)
         direction = pos.get("direction", "LONG")
         # margin = collateral at risk; PnL % is ROI on margin (not notional)
-        margin    = size / leverage
+        margin    = (size / leverage) if size and leverage else 0.0
 
         if direction == "LONG":
             upnl      = (cp - entry) * qty
@@ -227,10 +234,15 @@ async def set_balance_override(request: Request):
         return {"ok": True, "message": "Manual balance cleared — using live exchange data"}
 
     balance = body.get("balance")
-    if not balance or float(balance) <= 0:
+    if balance is None:
+        return {"ok": False, "error": "Balance must be > 0"}
+    try:
+        balance = float(balance)
+    except (ValueError, TypeError):
+        return {"ok": False, "error": "Invalid balance value"}
+    if balance <= 0:
         return {"ok": False, "error": "Balance must be > 0"}
 
-    balance = float(balance)
     await state.portfolio_manager.set_manual_balance(balance)
     # Sync risk manager so position sizing uses the new balance immediately
     if state.trading_system and hasattr(state.trading_system, "_risk"):
@@ -367,8 +379,9 @@ async def get_advanced_stats():
     sharpe = 0.0
     if len(pnls) >= 3:
         mu  = sum(pnls) / len(pnls)
-        std = _stats.stdev(pnls) or 1e-9
-        sharpe = round(mu / std * (len(pnls) ** 0.5), 3)
+        std = _stats.stdev(pnls)
+        # Guard: if all PnL values are identical, std=0 → Sharpe undefined, return 0
+        sharpe = round(mu / std * (len(pnls) ** 0.5), 3) if std > 1e-9 else 0.0
 
     # --- Calmar Ratio = total PnL / max drawdown (USDT) ---
     # Measures return quality relative to worst peak-to-trough loss

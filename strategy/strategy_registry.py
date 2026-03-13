@@ -108,7 +108,7 @@ class StrategyRegistry:
             return
         try:
             rows = await self._db.get_strategy_stats()
-            self._stats_cache = {r["name"]: r for r in rows}
+            self._stats_cache = {r["name"]: r for r in (rows or [])}
             self._cache_ts = time.time()
         except Exception as exc:
             logger.debug("Strategy stats cache refresh failed: {}", exc)
@@ -124,6 +124,8 @@ class StrategyRegistry:
 
         # Recent performance score from last 10 trades (0–1)
         recent = stats.get("recent_pnl", [])
+        if not isinstance(recent, list):
+            recent = []
         recent_score = (
             sum(1 for p in recent if p > 0) / len(recent)
             if recent else 0.5
@@ -136,8 +138,8 @@ class StrategyRegistry:
             else 0.5
         )
 
-        # Risk/reward score (capped at RR = 4)
-        rr_score = min(setup.risk_reward / 4.0, 1.0)
+        # Risk/reward score (capped at RR = 4; floored at 0 to prevent negative fitness)
+        rr_score = max(0.0, min(setup.risk_reward / 4.0, 1.0))
 
         # Dynamic weight schedule
         if trades < 5:

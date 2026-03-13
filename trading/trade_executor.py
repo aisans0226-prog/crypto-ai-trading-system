@@ -169,6 +169,9 @@ class BinanceExecutor:
         """Returns list of currently open positions from Binance Futures."""
         try:
             data = await self._get("/fapi/v2/positionRisk", {})
+            if not isinstance(data, list):
+                logger.debug("get_open_positions: unexpected response type {}", type(data))
+                return []
             return [p for p in data if float(p.get("positionAmt", 0)) != 0]
         except Exception as exc:
             logger.debug("get_open_positions Binance error: {}", exc)
@@ -178,6 +181,8 @@ class BinanceExecutor:
         """Get available USDT balance from Binance Futures."""
         try:
             assets = await self._get("/fapi/v2/balance", {})
+            if not isinstance(assets, list):
+                return 0.0
             for asset in assets:
                 if asset.get("asset") == "USDT":
                     return float(asset.get("availableBalance", 0))
@@ -195,6 +200,8 @@ class BinanceExecutor:
                 "startTime": start_time,
                 "limit": 50,
             })
+            if not isinstance(data, list):
+                return 0.0
             return sum(float(r.get("income", 0)) for r in data)
         except Exception as exc:
             logger.debug("get_recent_pnl Binance error {}: {}", symbol, exc)
@@ -377,7 +384,8 @@ class BybitExecutor:
         """Get available USDT balance from Bybit."""
         try:
             data = await self._get("/v5/account/wallet-balance", {"accountType": "CONTRACT"})
-            coins = data.get("result", {}).get("list", [{}])[0].get("coin", [])
+            lst = data.get("result", {}).get("list", [])
+            coins = lst[0].get("coin", []) if lst else []
             for coin in coins:
                 if coin.get("coin") == "USDT":
                     return float(coin.get("availableToWithdraw", 0))
