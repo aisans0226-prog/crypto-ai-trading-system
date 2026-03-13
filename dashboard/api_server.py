@@ -74,7 +74,7 @@ def _make_bot_status_payload() -> dict:
         "scan_cycle":         state.bot_stats.get("scan_cycle", 0),
         "uptime_seconds":     round(_t.time() - started, 0) if started else 0,
         "signals_in_memory":  len(state.recent_signals),
-        "training_mode":      _cfg.effective_training_mode,
+        "training_mode":      _cfg.training_mode,
         "dry_run":            getattr(_cfg, "dry_run", False),
         "score_threshold":    _cfg.effective_signal_score_threshold,
         "max_daily_trades":   _cfg.effective_max_daily_trades,
