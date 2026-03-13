@@ -50,20 +50,42 @@ class Settings(BaseSettings):
     max_daily_trades: int = 3              # max trades bot can open per day
     max_daily_loss_pct: float = 5.0        # halt trading if daily realized loss >= 5% of balance
 
+    # ── Capital allocation safety ──────────────────────────────────────────────
+    # Fraction of total balance kept as a permanent anti-liquidation reserve.
+    # This is the "50% always in the bank" concept:
+    #   tradeable_balance = account_balance × (1 - balance_reserve_pct/100)
+    # The risk manager only draws from tradeable_balance when sizing positions.
+    # Example: balance=1000, reserve=50% → max deployable = 500 USDT;
+    #   with 5 trades × 10% cap each = 500 USDT max margin, 0 USDT wasted.
+    # Remaining 500 USDT covers: unrealized loss, funding fees, maintenance margin.
+    balance_reserve_pct: float = 50.0
+
     # Position-size safety guards
-    # Limits margin per single trade to this % of free balance.
+    # Limits margin per single trade to this % of FREE tradeable balance.
     # Prevents over-allocation when SL is tight (tight SL → large position → huge margin).
-    # Example: 20% cap, balance=1000 → max margin/trade=200 USDT, max notional=600 USDT at 3×.
-    max_position_size_pct: float = 20.0
+    # Example: reserve=50%, balance=1000 → tradeable=500; cap=10% → max margin/trade=$50,
+    #   max notional=150 USDT at 3×.  5 trades × $50 = $250 max total margin (25% of balance).
+    max_position_size_pct: float = 10.0
 
     # Minimum SL distance from entry (%). Prevents ultra-tight SL that would create a
     # position too large to be safe.  0 = disabled (not recommended).
     min_stop_loss_pct: float = 0.5
 
     # Estimated taker fee per side (%).
-    # Binance Futures = 0.04 %, Bybit Linear = 0.055 %; use 0.05 % as a safe estimate.
+    # Binance Futures = 0.04 %, Bybit Linear = 0.055 %; use 0.06 % as a conservative estimate
+    # (adds ~0.02% for spread/slippage on altcoins).
     # Used to warn when round-trip fees eat a large fraction of the risk budget.
-    taker_fee_pct: float = 0.05
+    taker_fee_pct: float = 0.06
+
+    # Funding fee safety estimation.
+    # Futures positions pay funding every 8 h.  These fields let the risk manager
+    # budget for expected funding costs before sizing the position.
+    #   max_funding_rate_pct = worst-case rate per 8 h period (0.10% = extreme bull market)
+    #   funding_periods_estimate = number of 8 h periods to budget for
+    #     (max_position_hold_hours=18 → ceil(18/8) = 3 periods)
+    # The estimated funding cost is added to taker fees in the safety cap check.
+    max_funding_rate_pct: float = 0.10    # % per 8-h period (pessimistic; normal ≈ 0.01%)
+    funding_periods_estimate: int = 3     # periods to budget for (matches 18 h hold limit)
 
     # ── Smart position exit controls ──────────────────────────────────────────
     # Entry order type: MARKET fills instantly; LIMIT waits for a better price

@@ -194,14 +194,28 @@ class RiskManager:
             return None
 
         # ── Position sizing ───────────────────────────────────────────────
-        # Use free balance (total minus margin already committed to open/pending
-        # positions). This prevents over-allocation when multiple trades are open
-        # or when concurrent signals fire within the same scan cycle.
-        free_balance = max(0.0, self._account_balance - self._used_margin)
+        # Step 1: Reserve balance_reserve_pct% of total balance as a permanent
+        # anti-liquidation buffer.  Even if all 5 trade slots are filled, this
+        # fraction of the account is NEVER touched by margin.
+        # Purpose: covers unrealized losses, funding fees, maintenance margin,
+        # and prevents cross-margin cascades.
+        # Example: balance=1000, reserve=50% → tradeable=500 USDT.
+        #   5 trades × 10% cap × 500 = 250 USDT max cumulative margin (25% of total).
+        tradeable_balance = self._account_balance * (
+            1.0 - settings.balance_reserve_pct / 100.0
+        )
+
+        # Step 2: Further subtract already-committed margin from in-flight positions.
+        # This prevents concurrent signals within the same scan cycle from all
+        # sizing against the same tradeable balance.
+        free_balance = max(0.0, tradeable_balance - self._used_margin)
+
         if free_balance < 10.0:
             logger.warning(
-                "{} insufficient free balance: {:.2f} USDT free ({:.2f} USDT used as margin) — skip",
+                "{} insufficient free balance: {:.2f} USDT free "
+                "({:.2f} used margin | {:.0f}%% reserve on {:.2f} USDT total) — skip",
                 symbol, free_balance, self._used_margin,
+                settings.balance_reserve_pct, self._account_balance,
             )
             return None
 
@@ -212,45 +226,61 @@ class RiskManager:
         risk_pct_of_entry = risk / entry_price
         position_size_usdt = risk_usdt / risk_pct_of_entry
 
-        # ── Hard cap: max margin per trade = max_position_size_pct % of free balance ──
-        # Prevents oversized positions when SL is tight (tight SL → large notional →
-        # most of the balance consumed as margin with nothing left for fees/funding).
-        # Example: max_position_size_pct=20, balance=1000, leverage=3
-        #   → max notional = 600 USDT, max margin = 200 USDT (20% of balance)
+        # ── Hard cap: max margin per trade = max_position_size_pct % of free tradeable balance ──
+        # Prevents oversized positions when SL is tight.
+        # Example: reserve=50%, balance=1000, cap=10%, leverage=3
+        #   → tradeable=500, max notional = 500 × 10% × 3 = 150 USDT, max margin = 50 USDT
         max_notional = free_balance * (settings.max_position_size_pct / 100.0) * leverage
         if position_size_usdt > max_notional:
             logger.debug(
                 "{} position capped: {:.2f} → {:.2f} USDT notional "
-                "(SL too tight relative to max_position_size_pct={:.0f}%%)",
-                symbol, position_size_usdt, max_notional, settings.max_position_size_pct,
+                "(max_position_size_pct={:.0f}%% of {:.2f} USDT free)",
+                symbol, position_size_usdt, max_notional,
+                settings.max_position_size_pct, free_balance,
             )
             position_size_usdt = max_notional
 
         # ── Fee awareness ─────────────────────────────────────────────────
-        # Futures round-trip cost = taker fee × notional × 2 (entry + exit).
-        # Warn when fees consume a large slice of the risk budget — signals that
-        # either the balance is too small or the SL is too tight.
+        # A. Taker round-trip: entry + exit taker fee × notional.
         round_trip_fee_usdt = position_size_usdt * (settings.taker_fee_pct / 100.0) * 2.0
-        fee_ratio = round_trip_fee_usdt / risk_usdt if risk_usdt > 0 else 0.0
+
+        # B. Funding fee estimate: worst-case rate × notional × number of 8-h periods.
+        # A position held up to max_position_hold_hours pays ceil(hold/8) funding
+        # settlements.  We budget for funding_periods_estimate (default 3) periods
+        # at max_funding_rate_pct (default 0.10%) per period.
+        # This prevents the case where funding silently drains more than the risk budget.
+        estimated_funding_usdt = (
+            position_size_usdt
+            * (settings.max_funding_rate_pct / 100.0)
+            * settings.funding_periods_estimate
+        )
+
+        total_fees_usdt = round_trip_fee_usdt + estimated_funding_usdt
+        fee_ratio = total_fees_usdt / risk_usdt if risk_usdt > 0 else 0.0
         if fee_ratio > 0.20:
             logger.warning(
-                "{} fees ≈ {:.4f} USDT ({:.1f}%% of {:.4f} USDT risk budget) — "
+                "{} total estimated fees {:.4f} USDT "
+                "(taker={:.4f} + funding_est={:.4f}) = {:.1f}%% of {:.4f} USDT risk — "
                 "SL may be too tight or balance too small",
-                symbol, round_trip_fee_usdt, fee_ratio * 100, risk_usdt,
+                symbol, total_fees_usdt,
+                round_trip_fee_usdt, estimated_funding_usdt,
+                fee_ratio * 100, risk_usdt,
             )
 
         # ── Final margin safety check ─────────────────────────────────────
-        # Ensure margin + estimated fees do not exceed 95% of free balance.
-        # (The remaining 5% covers funding rate deductions and liquidation buffer.)
+        # Ensure margin + all estimated fees do not exceed 95% of free tradeable balance.
+        # The 5% micro-buffer guards against exchange fee rounding and funding
+        # settlements that arrive slightly before a position closes.
         margin_required = position_size_usdt / leverage
-        total_committed = margin_required + round_trip_fee_usdt
+        total_committed = margin_required + total_fees_usdt
         if total_committed > free_balance * 0.95:
             logger.warning(
-                "{} margin ({:.2f}) + fees ({:.4f}) = {:.2f} USDT > 95%% of free balance "
-                "({:.2f} USDT) — position reduced",
-                symbol, margin_required, round_trip_fee_usdt, total_committed, free_balance,
+                "{} margin ({:.2f}) + fees ({:.4f}) = {:.2f} USDT > 95%% of free "
+                "tradeable balance ({:.2f} USDT) — position reduced",
+                symbol, margin_required, total_fees_usdt,
+                total_committed, free_balance,
             )
-            safe_margin = free_balance * 0.95 - round_trip_fee_usdt
+            safe_margin = free_balance * 0.95 - total_fees_usdt
             if safe_margin <= 0:
                 logger.warning("{} not enough free balance after fee reserve — skip", symbol)
                 return None
@@ -273,12 +303,16 @@ class RiskManager:
 
         logger.info(
             "RiskParams | {} {} | entry={} SL={} TP={} qty={} lev={} RR={} | "
-            "risk=${:.2f}  free_bal=${:.2f}  notional=${:.2f}  margin=${:.2f}  fees≈${:.4f}",
+            "risk=${:.2f}  free=${:.2f} (reserve={:.0f}%% of ${:.2f})  "
+            "notional=${:.2f}  margin=${:.2f}  taker≈${:.4f}  funding_est≈${:.4f}",
             symbol, direction, entry_price, stop_loss, take_profit,
             quantity, leverage, round(rr, 2),
-            risk_usdt, free_balance, round(position_size_usdt, 2),
+            risk_usdt, free_balance,
+            settings.balance_reserve_pct, self._account_balance,
+            round(position_size_usdt, 2),
             round(position_size_usdt / leverage, 2),
             round(round_trip_fee_usdt, 4),
+            round(estimated_funding_usdt, 4),
         )
         return params
 
