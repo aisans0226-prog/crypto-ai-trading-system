@@ -402,11 +402,11 @@ async def get_trades(limit: int = 100, status: str = "all"):
     return {"trades": rows, "stats": stats}
 
 @app.get("/api/coin-stats")
-async def get_coin_stats(limit: int = 50):
-    """Top coins ranked by win rate from the self-learning database."""
+async def get_coin_stats(limit: int = 200):
+    """All tracked coins from the self-learning database, sorted by executions then signals."""
     if not state.coin_database:
         return {"coins": [], "total": 0}
-    coins = await state.coin_database.get_top_coins(limit)
+    coins = await state.coin_database.get_all_coin_stats(limit)
     return {"coins": coins, "total": len(coins)}
 
 

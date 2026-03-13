@@ -12,14 +12,14 @@ building a growing knowledge base used by ResearchEngine to bias future
 decisions toward historically profitable setups.
 """
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from loguru import logger
 from sqlalchemy import (
     Column, Integer, String, Float, DateTime, Boolean, Text,
-    select, update, func,
+    select, update, func, delete,
 )
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
@@ -244,12 +244,41 @@ class CoinDatabase:
             "last_signal_ts":   row.last_signal_ts.isoformat() if row.last_signal_ts else None,
         }
 
-    async def get_top_coins(self, limit: int = 20) -> List[dict]:
-        """Coins with >= 2 executed trades, sorted by win rate."""
+    async def get_all_coin_stats(self, limit: int = 200) -> List[dict]:
+        """All tracked coins with any signals, sorted by times_executed then total_signals."""
         async with self._sf() as session:
             result = await session.execute(
                 select(CoinStats)
-                .where(CoinStats.times_executed >= 2)
+                .where(CoinStats.total_signals > 0)
+                .order_by(
+                    CoinStats.times_executed.desc(),
+                    CoinStats.total_signals.desc(),
+                )
+                .limit(limit)
+            )
+            rows = result.scalars().all()
+        out = []
+        for r in rows:
+            total = r.wins + r.losses
+            out.append({
+                "symbol":           r.symbol,
+                "total_signals":    r.total_signals,
+                "times_researched": r.times_researched,
+                "times_executed":   r.times_executed,
+                "wins":             r.wins,
+                "losses":           r.losses,
+                "win_rate":         round(r.wins / total * 100, 1) if total > 0 else None,
+                "total_pnl":        round(r.total_pnl, 2),
+                "avg_score":        r.avg_score,
+            })
+        return out
+
+    async def get_top_coins(self, limit: int = 20) -> List[dict]:
+        """Coins with >= 1 executed trade, sorted by win rate."""
+        async with self._sf() as session:
+            result = await session.execute(
+                select(CoinStats)
+                .where(CoinStats.times_executed >= 1)
                 .order_by(
                     (CoinStats.wins / func.greatest(CoinStats.wins + CoinStats.losses, 1)).desc()
                 )
@@ -445,3 +474,21 @@ class CoinDatabase:
         if pending:
             logger.info("load_pending_ml_samples: recovered {} pending predictions", len(pending))
         return pending
+
+    async def cleanup_stale_ml_samples(self, hours: int = 24) -> int:
+        """Delete pending (unlabeled) ML samples older than `hours`.
+        Called on startup to clear zombie records from past scan cycles.
+        Returns count of deleted rows.
+        """
+        cutoff = datetime.utcnow() - timedelta(hours=hours)
+        async with self._sf() as session:
+            result = await session.execute(
+                delete(MLTrainingSample)
+                .where(MLTrainingSample.label.is_(None))
+                .where(MLTrainingSample.created_at < cutoff)
+            )
+            await session.commit()
+            deleted = result.rowcount
+        if deleted:
+            logger.info("ML cleanup: removed {} stale pending samples (>{} h old)", deleted, hours)
+        return deleted

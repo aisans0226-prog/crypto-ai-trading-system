@@ -397,9 +397,6 @@ class TradingSystem:
                         signal.ai_prediction = confidence
                         signal.confidence = confidence
                         self._ml_predictions_cache[signal.symbol] = confidence
-                        trade_id = f"{signal.symbol}_{int(now)}"
-                        self._learner.record_prediction(trade_id, signal.symbol, df)
-                        self._pending_labels[signal.symbol] = trade_id
                     except Exception as exc:
                         logger.debug("ML predict error {}: {}", signal.symbol, exc)
 
@@ -751,6 +748,14 @@ class TradingSystem:
                     meta["strategy_name"] = strategy_name
                     self._position_meta[risk_params.symbol] = meta
 
+        # Record ML feature vector only when a real trade is opened (not on every signal)
+        if trade_id:
+            df_cached = self._klines_cache.get(risk_params.symbol)
+            if df_cached is not None and len(df_cached) >= 50:
+                ml_key = f"{risk_params.symbol}_{trade_id}"
+                self._learner.record_prediction(ml_key, risk_params.symbol, df_cached)
+                self._pending_labels[risk_params.symbol] = ml_key
+
         if trade_id and research_id:
             # Link research decision to the actual trade for outcome tracking
             await self._coin_db.mark_research_executed(research_id, trade_id)
@@ -1077,6 +1082,12 @@ class TradingSystem:
                             )
                             meta["strategy_name"] = pending.strategy_name
                             self._position_meta[symbol] = meta
+                            # Record ML feature vector on actual fill (not on signal)
+                            df_cached = self._klines_cache.get(symbol)
+                            if df_cached is not None and len(df_cached) >= 50:
+                                ml_key = f"{symbol}_{trade_id}"
+                                self._learner.record_prediction(ml_key, symbol, df_cached)
+                                self._pending_labels[symbol] = ml_key
                             if pending.research_id:
                                 await self._coin_db.mark_research_executed(
                                     pending.research_id, trade_id

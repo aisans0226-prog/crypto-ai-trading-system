@@ -102,6 +102,9 @@ class SelfLearningEngine:
             for trade_id, entry in db_pending.items():
                 if trade_id not in self._pending:
                     self._pending[trade_id] = entry
+
+            # Remove stale unlabeled samples older than 24h (scan-loop zombies)
+            await db.cleanup_stale_ml_samples(hours=24)
         except Exception as exc:
             logger.error("SelfLearning.initialize error (DB not available?): {}", exc)
 
@@ -207,7 +210,7 @@ class SelfLearningEngine:
     def get_top_coins(self, n: int = 20) -> List[Tuple[str, float]]:
         eligible = [
             (sym, stat["win_rate"]) for sym, stat in self._coin_stats.items()
-            if stat.get("total", 0) >= 5
+            if stat.get("total", 0) >= 2
         ]
         return sorted(eligible, key=lambda x: x[1], reverse=True)[:n]
 
