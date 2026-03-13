@@ -50,6 +50,10 @@ class MarketScanner:
         """Return the klines map from the most recent scan (all volume-filtered coins)."""
         return dict(self._last_klines)
 
+    def get_last_funding_cache(self) -> Dict[str, float]:
+        """Return the bulk-fetched funding rates from the most recent scan."""
+        return dict(self._pump._funding_bulk)
+
     # ── Public API ────────────────────────────────────────────────────────
     async def scan_all(self) -> List[SignalResult]:
         """Full market scan. Returns signals sorted by score descending."""
@@ -68,11 +72,16 @@ class MarketScanner:
         symbols = [s for s in symbols if s in high_volume]
         logger.info("Symbols after volume filter: {}", len(symbols))
 
-        # Bulk OHLCV fetch
-        klines_map = await self._engine.bulk_fetch_klines(
-            symbols, interval="15m", limit=200
+        # Bulk OHLCV fetch + bulk OI + bulk funding rates — all in parallel
+        klines_map, oi_map, funding_map = await asyncio.gather(
+            self._engine.bulk_fetch_klines(symbols, interval="15m", limit=200),
+            self._engine.bulk_fetch_open_interests(symbols),
+            self._engine.bulk_fetch_funding_rates(),
         )
         self._last_klines = dict(klines_map)  # cache for CoinRanker
+
+        # Prime pump-detector caches so per-symbol evaluate() skips HTTP calls
+        self._pump.update_caches(oi_map=oi_map, funding_map=funding_map)
 
         # Parallel sub-scanner execution
         semaphore = asyncio.Semaphore(100)
@@ -113,25 +122,37 @@ class MarketScanner:
         volume_24h = float(ticker.get("quoteVolume", 0))
         price_change_pct = float(ticker.get("priceChangePercent", 0))
 
+        # ── Direction from EMA stack (technical basis, not 24h price change) ──
+        close = df["close"].astype(float)
+        ema20 = close.ewm(span=20).mean().iloc[-1]
+        ema50 = close.ewm(span=50).mean().iloc[-1]
+        last_close = close.iloc[-1]
+        if last_close > ema20 and ema20 > ema50:
+            direction = "LONG"
+        elif last_close < ema20 and ema20 < ema50:
+            direction = "SHORT"
+        elif price_change_pct >= 0:
+            direction = "LONG"   # fallback to momentum when EMA is flat
+        else:
+            direction = "SHORT"
+
         result = SignalResult(
             symbol=symbol,
             price=price,
             volume_24h=volume_24h,
             price_change_pct=price_change_pct,
+            direction=direction,
         )
 
-        # Delegate to sub-scanners
-        pump_score, pump_signals = await self._pump.evaluate(symbol, df, ticker)
-        whale_score, whale_signals = await self._whale.evaluate(symbol, df)
-        meme_score, meme_signals = await self._meme.evaluate(symbol, df, ticker)
+        # Run all 3 sub-scanners in parallel — ~3x faster than sequential
+        (pump_score, pump_signals), (whale_score, whale_signals), (meme_score, meme_signals) = \
+            await asyncio.gather(
+                self._pump.evaluate(symbol, df, ticker, direction),
+                self._whale.evaluate(symbol, df, direction),
+                self._meme.evaluate(symbol, df, ticker),
+            )
 
         result.score = pump_score + whale_score + meme_score
         result.signals = pump_signals + whale_signals + meme_signals
-
-        # Direction bias — treat flat (0 %) as neutral-long
-        if price_change_pct >= 0:
-            result.direction = "LONG"
-        else:
-            result.direction = "SHORT"
 
         return result

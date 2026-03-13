@@ -116,6 +116,7 @@ class TradingSystem:
         # AI self-learning and ranking
         self._learner = SelfLearningEngine()
         self._ranker = CoinRanker(self._learner)
+        self._learner.set_predictor(self._ml)   # enable hot-reload after retrain
         self._updater = AutoUpdater()
 
         # Self-learning tracking
@@ -411,6 +412,10 @@ class TradingSystem:
                 # Update full klines cache from bulk scan so CoinRanker can rank
                 # ALL volume-filtered coins, not just the handful that hit threshold
                 self._klines_cache.update(self._scanner.get_last_klines())
+
+                # Sync funding cache to ResearchEngine so it can apply funding-rate gate
+                if self._research:
+                    self._research.update_funding_cache(self._scanner.get_last_funding_cache())
 
                 # Re-sort: primary = signal score DESC, secondary = AI rank DESC.
                 # When multiple signals tie on score, coins with higher AI grade

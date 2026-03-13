@@ -51,17 +51,25 @@ class CoinRanker:
         ml_predictions: Optional[Dict[str, float]] = None,
     ) -> List[CoinRank]:
         loop = asyncio.get_running_loop()
+        preds = ml_predictions or {}
+
+        # Analyse all coins in parallel — each _analyse() is CPU-bound and
+        # runs in the thread pool. asyncio.gather dispatches all at once
+        # instead of waiting for each to finish before starting the next.
+        valid = [(sym, df) for sym, df in klines.items() if len(df) >= 50]
+        coros = [
+            loop.run_in_executor(None, self._analyse, sym, df, preds)
+            for sym, df in valid
+        ]
+        raw = await asyncio.gather(*coros, return_exceptions=True)
+
         results: List[CoinRank] = []
-        for symbol, df in klines.items():
-            if len(df) < 50:
-                continue
-            try:
-                rank = await loop.run_in_executor(
-                    None, self._analyse, symbol, df, ml_predictions or {}
-                )
-                results.append(rank)
-            except Exception as exc:
-                logger.debug("CoinRanker error {}: {}", symbol, exc)
+        for (sym, _), outcome in zip(valid, raw):
+            if isinstance(outcome, Exception):
+                logger.debug("CoinRanker error {}: {}", sym, outcome)
+            else:
+                results.append(outcome)
+
         results.sort(key=lambda r: r.composite_score, reverse=True)
         return results
 

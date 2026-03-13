@@ -1,10 +1,10 @@
 """
-scanners/whale_tracker.py — Detect whale accumulation via order-book & volume.
+scanners/whale_tracker.py — Detect whale accumulation/distribution via order-book & volume.
 
 Scoring breakdown (max 4 points):
-  +1  large buy-side order book imbalance
-  +2  absorption pattern (large volume, small price move = accumulation)
-  +1  consecutive bullish candles  ≥ 3
+  +1  order-book imbalance in trade direction (buy-side for LONG, sell-side for SHORT)
+  +2  absorption pattern (large volume, small price move = smart money positioning)
+  +1  consecutive candles in trade direction (3+ green for LONG, 3+ red for SHORT)
 """
 from typing import List, Tuple
 import numpy as np
@@ -22,25 +22,32 @@ class WhaleTracker:
         self,
         symbol: str,
         df: pd.DataFrame,
+        direction: str = "LONG",
     ) -> Tuple[int, List[str]]:
         score = 0
         signals: List[str] = []
 
         try:
-            # ── Order book imbalance ─────────────────────────────────────
+            # ── Order book imbalance (100 levels captures deep whale orders) ──
             try:
-                book = await self._engine.get_order_book_binance(symbol, limit=20)
+                book = await self._engine.get_order_book_binance(symbol, limit=100)
                 bid_volume = sum(q for _, q in book["bids"])
                 ask_volume = sum(q for _, q in book["asks"])
-                if ask_volume > 0:
-                    imbalance = bid_volume / ask_volume
-                    if imbalance >= 1.5:
+                if direction == "LONG" and ask_volume > 0:
+                    # Buyers dominating: bid pressure > ask pressure
+                    if bid_volume / ask_volume >= 1.5:
                         score += 1
                         signals.append("buy_side_imbalance")
+                elif direction == "SHORT" and bid_volume > 0:
+                    # Sellers dominating: ask pressure > bid pressure
+                    if ask_volume / bid_volume >= 1.5:
+                        score += 1
+                        signals.append("sell_side_imbalance")
             except Exception:
                 pass
 
-            # ── Accumulation pattern (high volume, low price change) ──────
+            # ── Absorption pattern (high volume, low price change = smart money) ──
+            # Direction-agnostic: whales accumulate (long) OR distribute (short) silently
             recent = df.tail(5)
             avg_vol = df["volume"].rolling(20).mean().iloc[-1]
             bar_count = 0
@@ -50,15 +57,21 @@ class WhaleTracker:
                     bar_count += 1
             if bar_count >= 2:
                 score += 2
-                signals.append("whale_accumulation")
+                signals.append("whale_absorption")
 
-            # ── Consecutive bullish candles ───────────────────────────────
+            # ── Consecutive directional candles ───────────────────────────
             closes = df["close"].tail(5).values
             opens = df["open"].tail(5).values
-            bullish_streak = sum(1 for c, o in zip(closes[-3:], opens[-3:]) if c > o)
-            if bullish_streak >= 3:
-                score += 1
-                signals.append("strong_bullish_streak")
+            if direction == "LONG":
+                streak = sum(1 for c, o in zip(closes[-3:], opens[-3:]) if c > o)
+                if streak >= 3:
+                    score += 1
+                    signals.append("bullish_streak")
+            else:
+                streak = sum(1 for c, o in zip(closes[-3:], opens[-3:]) if c < o)
+                if streak >= 3:
+                    score += 1
+                    signals.append("bearish_streak")
 
         except Exception as exc:
             logger.debug("WhaleTracker error ({}): {}", symbol, exc)

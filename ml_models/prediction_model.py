@@ -222,6 +222,20 @@ class EnsemblePredictor:
         self._xgb = XGBoostPredictor()
         self._lstm = LSTMPredictor()
 
+    def reload_xgb(self) -> None:
+        """Hot-reload XGBoost model from disk after self-learning retrain.
+        Called by SelfLearningEngine immediately after _do_retrain() saves a new .pkl.
+        Ensures live predictions use the freshly trained model without restarting.
+        """
+        self._xgb._load_or_create()
+        logger.info("EnsemblePredictor: XGBoost hot-reloaded from disk")
+
+    def reload_lstm(self) -> None:
+        """Hot-reload LSTM model from disk after self-learning retrain."""
+        if TF_AVAILABLE:
+            self._lstm._load_or_create()
+            logger.info("EnsemblePredictor: LSTM hot-reloaded from disk")
+
     def predict(self, df: pd.DataFrame) -> Tuple[int, float]:
         features = build_features(df)
         xgb_prob = self._xgb.predict_proba(features)

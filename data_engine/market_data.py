@@ -32,7 +32,7 @@ class MarketDataEngine:
 
     def __init__(self) -> None:
         self._session: Optional[aiohttp.ClientSession] = None
-        self._rate_limit_semaphore = asyncio.Semaphore(20)
+        self._rate_limit_semaphore = asyncio.Semaphore(30)  # raised from 20
         self._binance_base = (
             BINANCE_FAPI_TESTNET if settings.binance_testnet else BINANCE_FAPI_PROD
         )
@@ -192,3 +192,33 @@ class MarketDataEngine:
         tasks = [fetch_one(s) for s in symbols]
         results = await asyncio.gather(*tasks)
         return {sym: df for sym, df in results if df is not None}
+
+    async def bulk_fetch_funding_rates(self) -> Dict[str, float]:
+        """Fetch ALL funding rates in a SINGLE API call (no per-symbol loop needed).
+        Returns {symbol: funding_rate} for every active futures contract.
+        """
+        try:
+            data = await self._get(f"{self._binance_base}/fapi/v1/premiumIndex")
+            if isinstance(data, list):
+                return {item["symbol"]: float(item["lastFundingRate"]) for item in data}
+            # Single symbol response (shouldn't happen without params but handle it)
+            return {data["symbol"]: float(data["lastFundingRate"])}
+        except Exception as exc:
+            logger.warning("bulk_fetch_funding_rates failed: {}", exc)
+            return {}
+
+    async def bulk_fetch_open_interests(self, symbols: List[str]) -> Dict[str, float]:
+        """Fetch OI for a list of symbols in parallel (Binance has no batch OI endpoint).
+        Uses a high-concurrency semaphore since these are lightweight calls.
+        """
+        semaphore = asyncio.Semaphore(50)
+
+        async def fetch_one(sym: str) -> Tuple[str, float]:
+            async with semaphore:
+                try:
+                    return sym, await self.get_open_interest_binance(sym)
+                except Exception:
+                    return sym, 0.0
+
+        results = await asyncio.gather(*[fetch_one(s) for s in symbols])
+        return dict(results)

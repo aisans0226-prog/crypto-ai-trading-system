@@ -28,6 +28,12 @@ try:
 except ImportError:
     XGB_AVAILABLE = False
 
+try:
+    import tensorflow as _tf
+    TF_AVAILABLE = True
+except ImportError:
+    TF_AVAILABLE = False
+
 from ml_models.prediction_model import build_features, MODEL_DIR
 
 if TYPE_CHECKING:
@@ -41,18 +47,23 @@ RETRAIN_EVERY = 50
 
 
 class SelfLearningEngine:
-    """Collects labelled trade outcomes and periodically retrains XGBoost.
+    """Collects labelled trade outcomes and periodically retrains XGBoost + LSTM.
 
     Call ``await initialize(db)`` once after bot startup to load prior
     training data from PostgreSQL and recover any pending predictions.
+
+    Call ``set_predictor(ensemble)`` to enable hot-reload of models into the
+    live predictor immediately after retraining (no restart required).
     """
 
     def __init__(self) -> None:
         self._db: Optional["CoinDatabase"] = None
-        self._pending: Dict[str, dict] = {}       # trade_id → {symbol, features, ts}
-        self._samples_X: List[np.ndarray] = []
+        self._predictor = None                         # EnsemblePredictor ref for hot-reload
+        self._pending: Dict[str, dict] = {}            # trade_id → {symbol, features, seq, ts}
+        self._samples_X: List[np.ndarray] = []         # flat feature vectors for XGBoost
+        self._samples_seq: List[np.ndarray] = []       # 60-row sequences for LSTM (memory-only)
         self._samples_y: List[int] = []
-        self._coin_stats: Dict[str, dict] = {}    # symbol → {wins, losses, total, win_rate}
+        self._coin_stats: Dict[str, dict] = {}         # symbol → {wins, losses, total, win_rate}
         self._new_since_retrain: int = 0
         # Retrain tracking
         self._retrain_count: int = 0
@@ -62,6 +73,10 @@ class SelfLearningEngine:
         self._labels_timeline: List[dict] = []
         # Load legacy files so the engine works even before initialize() is called
         self._load_legacy_files()
+
+    def set_predictor(self, predictor) -> None:
+        """Register the live EnsemblePredictor so hot-reload works after retrain."""
+        self._predictor = predictor
 
     # ── Startup ───────────────────────────────────────────────────────────────
     def _load_legacy_files(self) -> None:
@@ -123,18 +138,20 @@ class SelfLearningEngine:
 
     # ── Core learning methods ─────────────────────────────────────────────────
     def record_prediction(self, trade_id: str, symbol: str, df: pd.DataFrame) -> None:
-        """Store feature vector when signal fires.
-        Persists to DB in background (non-blocking).
+        """Store feature vector (for XGBoost) and sequence (for LSTM) when signal fires.
+        XGBoost flat vector is persisted to DB. LSTM sequence is memory-only.
         """
         try:
             features = build_features(df)
-            fvec = features.iloc[-1].values.astype(np.float32)
+            fvec = features.iloc[-1].values.astype(np.float32)   # flat, for XGBoost
+            seq  = features.values[-60:].astype(np.float32)       # 60-row, for LSTM
             self._pending[trade_id] = {
                 "symbol":   symbol,
                 "features": fvec,
+                "seq":      seq,   # stored in-memory; not persisted (too large for DB)
                 "ts":       datetime.utcnow().isoformat(),
             }
-            # Async background save to DB
+            # Async background save to DB (XGBoost flat vector only)
             if self._db is not None:
                 try:
                     loop = asyncio.get_running_loop()
@@ -143,7 +160,7 @@ class SelfLearningEngine:
                         name=f"save_ml_{trade_id}",
                     )
                 except RuntimeError:
-                    pass  # no running loop (e.g. unit test) — skip DB save
+                    pass
         except Exception as exc:
             logger.debug("record_prediction error: {}", exc)
 
@@ -158,6 +175,9 @@ class SelfLearningEngine:
         label = 1 if pnl > 0 else 0
         self._samples_X.append(pending["features"])
         self._samples_y.append(label)
+        # Register LSTM sequence if available (stored in-memory during this session)
+        if "seq" in pending and len(pending["seq"]) == 60:
+            self._samples_seq.append(pending["seq"])
         self._new_since_retrain += 1
 
         # Update in-memory per-coin stats
@@ -205,29 +225,65 @@ class SelfLearningEngine:
             return
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._do_retrain)
+        # Hot-reload both models into live predictor without restarting bot
+        if self._predictor is not None:
+            self._predictor.reload_xgb()
+            if TF_AVAILABLE:
+                self._predictor.reload_lstm()
 
     def _do_retrain(self) -> None:
+        """Retrain XGBoost (always) + LSTM (when enough sequences are available)."""
         try:
             X = np.array(self._samples_X)
             y = np.array(self._samples_y)
             if len(X) > 5000:
                 X, y = X[-5000:], y[-5000:]
+
+            # ── XGBoost retrain ──────────────────────────────────────────
             model = xgb.XGBClassifier(
                 n_estimators=400, max_depth=6, learning_rate=0.03,
                 subsample=0.8, colsample_bytree=0.8,
                 eval_metric="logloss", random_state=42,
             )
-            model.fit(X, y, verbose=False)
+            # Use a 10% hold-out split for eval (detects overfitting)
+            split = max(1, int(len(X) * 0.9))
+            X_tr, X_val = X[:split], X[split:]
+            y_tr, y_val = y[:split], y[split:]
+            model.fit(
+                X_tr, y_tr,
+                eval_set=[(X_val, y_val)] if len(X_val) > 0 else [(X_tr, y_tr)],
+                verbose=False,
+            )
             with open(MODEL_DIR / "xgb_model.pkl", "wb") as f:
                 pickle.dump(model, f)
+
             self._new_since_retrain = 0
             self._retrain_count += 1
             self._last_retrain_ts = datetime.utcnow().isoformat()
             self._model_trained = True
-            logger.info("Model retrained on {} samples — win-rate: {:.1f}%",
+            logger.info("XGBoost retrained on {} samples — win-rate: {:.1f}%",
                         len(y), sum(y) / len(y) * 100)
+
+            # ── LSTM retrain (requires TF and in-session sequences) ───────
+            if TF_AVAILABLE and len(self._samples_seq) >= 30:
+                self._do_retrain_lstm(y[-len(self._samples_seq):])
+
         except Exception as exc:
             logger.error("Retraining failed: {}", exc)
+
+    def _do_retrain_lstm(self, y_labels: np.ndarray) -> None:
+        """Retrain LSTM on accumulated 60-bar sequences from the current session."""
+        try:
+            from ml_models.prediction_model import LSTMPredictor
+            seqs = np.array(self._samples_seq[-5000:], dtype=np.float32)
+            y = np.array(y_labels[-len(seqs):], dtype=np.float32)
+            if len(seqs) != len(y) or len(seqs) < 30:
+                return
+            lstm = LSTMPredictor()
+            lstm.train(seqs, y, epochs=10)   # fewer epochs for incremental retraining
+            logger.info("LSTM retrained on {} sequences", len(seqs))
+        except Exception as exc:
+            logger.error("LSTM retraining failed: {}", exc)
 
     # ── Query helpers ────────────────────────────────────────────────────────
     def get_coin_win_rate(self, symbol: str) -> float:
