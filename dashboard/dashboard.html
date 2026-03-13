@@ -763,6 +763,8 @@ var pC=null,wC=null,rkC=null,lC=null,cpC=null,prC=null,mpC=null,wdC=null;
 var aS=[],aR=[],_rawHistData=[];
 var _prices={};         // live prices from WS tickers event { SYMBOL: price }
 var _posPrevPrices={};  // previous prices for flash direction in Open Positions
+var _livePositions={};  // latest enriched positions (cache for live price injection)
+var _posRefTimerId=null;// polling interval handle for trades page
 
 async function ap(p,m,b){
   var o={method:m||'GET',headers:{'Content-Type':'application/json'}};
@@ -835,9 +837,13 @@ function cwS(){
     if(d.type==='signal')lSD();
     if(d.type==='metrics'){uSt(d.data);bPC(d.data);bWL(d.data);}
     if(d.type==='positions'){
-      var pg=document.querySelector('.page.active');
-      if(pg&&pg.id==='page-trades')rPos(d.data.positions||{},d.data.exposure||null,true);
-      // Update live timestamp indicator
+      _livePositions=d.data.positions||{};
+      // Always update table (rPos no-ops when #ttb not visible is harmless)
+      rPos(_livePositions,d.data.exposure||null,true);
+      // Update unrealized PnL stat card (s8) on dashboard regardless of active page
+      var _upnl=Object.values(_livePositions).reduce(function(s,p){return s+(p.unrealized_pnl_usdt||0);},0);
+      var _s8=document.getElementById('s8');
+      if(_s8){var _uv=Math.round(_upnl*100)/100;_s8.textContent=(_uv>=0?'+':'')+'$'+Math.abs(_uv).toFixed(2);_s8.className='sv '+(_uv>=0?'pos':'neg');}
       var tsEl=document.getElementById('pos-live-ts');
       if(tsEl)tsEl.textContent='⊕ '+new Date().toLocaleTimeString();
     }
@@ -848,6 +854,34 @@ function cwS(){
       if(pg2){
         if(pg2.id==='page-signals')rSig();
         if(pg2.id==='page-heatmap'){var hm2=document.getElementById('hm');if(hm2)_rHMTiles();}
+        // Inject latest prices into cached positions for per-second price refresh on trades page
+        if(pg2.id==='page-trades'&&Object.keys(_livePositions).length){
+          var _injPos={};
+          for(var _sym in _livePositions){
+            _injPos[_sym]=Object.assign({},_livePositions[_sym]);
+            var _cp_new=_prices[_sym];
+            if(_cp_new){
+              _injPos[_sym].current_price=_cp_new;
+              // Recalculate unrealized PnL from new price
+              var _p=_injPos[_sym];
+              var _entry=_p.entry_price||0,_qty=_p.quantity||0,_lev=_p.leverage||1;
+              var _sz=_p.position_size_usdt||(_qty*_entry)||1,_mg=_sz/_lev;
+              if(_entry&&_qty){
+                var _upnl2=_p.direction==='LONG'?(_cp_new-_entry)*_qty:(_entry-_cp_new)*_qty;
+                _p.unrealized_pnl_usdt=Math.round(_upnl2*100)/100;
+                _p.unrealized_pnl_pct=_mg?Math.round(_upnl2/_mg*10000)/100:0;
+                // Update live R:R
+                var _sl=_p.stop_loss||0,_tp=_p.take_profit||0;
+                if(_sl&&_tp){
+                  var _sld=_p.direction==='LONG'?(_cp_new-_sl):(_sl-_cp_new);
+                  var _tpd=_p.direction==='LONG'?(_tp-_cp_new):(_cp_new-_tp);
+                  _p.rr_live=_sld>0?Math.round(_tpd/_sld*100)/100:0;
+                }
+              }
+            }
+          }
+          rPos(_injPos,null,true);
+        }
       }
     }
     if(d.type==='pending_orders') rPending(d.data.orders||[]);
@@ -1221,6 +1255,14 @@ async function lTr(){
   rPos(d.positions||{}, d.risk_exposure||{});
   var pd=await ap('/api/pending-orders');
   rPending(pd.pending_orders||[]);
+  // Start polling interval — keeps prices fresh even when WS delivery is slow
+  if(_posRefTimerId)clearInterval(_posRefTimerId);
+  _posRefTimerId=setInterval(async function(){
+    var pg=document.querySelector('.page.active');
+    if(!pg||pg.id!=='page-trades'){clearInterval(_posRefTimerId);_posRefTimerId=null;return;}
+    var r=await ap('/api/portfolio');
+    rPos(r.positions||{},r.risk_exposure||{},true);
+  },8000);
 }
 
 async function lPf(){

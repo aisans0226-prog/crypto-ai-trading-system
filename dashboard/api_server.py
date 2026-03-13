@@ -73,19 +73,49 @@ async def health():
 
 
 async def _fetch_all_prices() -> dict:
-    """Fetch ALL Binance Futures prices in a single API call (no auth required)."""
+    """Fetch ALL futures prices — testnet-aware, proxy-aware, Bybit fallback."""
     import aiohttp
+    # Respect BINANCE_TESTNET flag so geo-blocked VPS still gets prices
+    base = (
+        "https://testnet.binancefuture.com"
+        if getattr(settings, "binance_testnet", False)
+        else "https://fapi.binance.com"
+    )
+    proxy = getattr(settings, "http_proxy", None) or None
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(
-                "https://fapi.binance.com/fapi/v1/ticker/price",
-                timeout=aiohttp.ClientTimeout(total=5),
-            ) as resp:
+            req_kw: dict = {"timeout": aiohttp.ClientTimeout(total=5)}
+            if proxy:
+                req_kw["proxy"] = proxy
+            async with session.get(f"{base}/fapi/v1/ticker/price", **req_kw) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     return {item["symbol"]: float(item["price"]) for item in data}
     except Exception:
         pass
+
+    # Bybit fallback — covers fully geo-blocked Binance or Bybit-exchange deployments
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                "https://api.bybit.com/v5/market/tickers?category=linear",
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    prices: dict = {}
+                    for item in data.get("result", {}).get("list", []):
+                        sym = item.get("symbol", "")
+                        lp  = item.get("lastPrice")
+                        if sym.endswith("USDT") and lp:
+                            try:
+                                prices[sym] = float(lp)
+                            except Exception:
+                                pass
+                    return prices
+    except Exception:
+        pass
+
     return {}
 
 
@@ -713,14 +743,14 @@ async def _realtime_loop() -> None:
 
             await broadcast("positions", {"positions": positions, "exposure": exposure})
 
-            # Broadcast live prices for recent signal symbols so the dashboard
-            # can show current prices on the signal list and heatmap without
-            # extra REST calls from the browser.
+            # Broadcast live prices for recent signal symbols + open position symbols
             sig_syms = list({s.get("symbol") for s in state.recent_signals[-100:] if s.get("symbol")})
-            if sig_syms and all_prices:
-                sig_prices = {sym: all_prices[sym] for sym in sig_syms if sym in all_prices}
-                if sig_prices:
-                    await broadcast("tickers", {"prices": sig_prices})
+            pos_syms = list(positions.keys())
+            all_relevant = list(set(sig_syms) | set(pos_syms))
+            if all_relevant and all_prices:
+                rel_prices = {sym: all_prices[sym] for sym in all_relevant if sym in all_prices}
+                if rel_prices:
+                    await broadcast("tickers", {"prices": rel_prices})
 
             # Broadcast pending LIMIT entry orders so dashboard can show countdown
             if state.pending_entry_orders:
