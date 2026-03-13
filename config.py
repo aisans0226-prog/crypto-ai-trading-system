@@ -50,6 +50,21 @@ class Settings(BaseSettings):
     max_daily_trades: int = 3              # max trades bot can open per day
     max_daily_loss_pct: float = 5.0        # halt trading if daily realized loss >= 5% of balance
 
+    # Position-size safety guards
+    # Limits margin per single trade to this % of free balance.
+    # Prevents over-allocation when SL is tight (tight SL → large position → huge margin).
+    # Example: 20% cap, balance=1000 → max margin/trade=200 USDT, max notional=600 USDT at 3×.
+    max_position_size_pct: float = 20.0
+
+    # Minimum SL distance from entry (%). Prevents ultra-tight SL that would create a
+    # position too large to be safe.  0 = disabled (not recommended).
+    min_stop_loss_pct: float = 0.5
+
+    # Estimated taker fee per side (%).
+    # Binance Futures = 0.04 %, Bybit Linear = 0.055 %; use 0.05 % as a safe estimate.
+    # Used to warn when round-trip fees eat a large fraction of the risk budget.
+    taker_fee_pct: float = 0.05
+
     # ── Smart position exit controls ──────────────────────────────────────────
     # Entry order type: MARKET fills instantly; LIMIT waits for a better price
     entry_order_type: str = "MARKET"          # MARKET | LIMIT

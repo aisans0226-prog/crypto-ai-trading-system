@@ -543,6 +543,14 @@ class TradingSystem:
                         )
 
                         if entry.confirmations >= settings.effective_watchlist_confirmations:
+                            # Skip research if no slot available — saves LLM API cost
+                            if not self._risk.can_open_trade(silent=True):
+                                logger.debug(
+                                    "Skip research: {} — no trade slot available, will retry",
+                                    signal.symbol,
+                                )
+                                continue
+
                             # ── Stage 3: Deep research ─────────────────────
                             logger.info(
                                 "🔬 Research start: {} | score={}", signal.symbol, signal.score

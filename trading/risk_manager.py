@@ -103,25 +103,28 @@ class RiskManager:
         self._reset_daily_if_needed()
         return max(0, settings.effective_max_daily_trades - self._daily_trades)
 
-    def can_open_trade(self) -> bool:
+    def can_open_trade(self, silent: bool = False) -> bool:
         self._reset_daily_if_needed()
         if self._open_trades >= settings.effective_max_open_trades:
-            logger.warning(
-                "Max open trades reached ({}/{})",
-                self._open_trades, settings.effective_max_open_trades,
-            )
+            if not silent:
+                logger.warning(
+                    "Max open trades reached ({}/{})",
+                    self._open_trades, settings.effective_max_open_trades,
+                )
             return False
         if self._daily_trades >= settings.effective_max_daily_trades:
-            logger.warning(
-                "Daily trade limit reached ({}/{}). Resuming tomorrow.",
-                self._daily_trades, settings.effective_max_daily_trades,
-            )
+            if not silent:
+                logger.warning(
+                    "Daily trade limit reached ({}/{}). Resuming tomorrow.",
+                    self._daily_trades, settings.effective_max_daily_trades,
+                )
             return False
         if self.daily_loss_exceeded:
-            logger.warning(
-                "Daily loss limit reached ({:.2f} USDT = {:.1f}% of balance). No new trades today.",
-                abs(self._daily_pnl), settings.max_daily_loss_pct,
-            )
+            if not silent:
+                logger.warning(
+                    "Daily loss limit reached ({:.2f} USDT = {:.1f}% of balance). No new trades today.",
+                    abs(self._daily_pnl), settings.max_daily_loss_pct,
+                )
             return False
         return True
 
@@ -155,6 +158,20 @@ class RiskManager:
                 stop_loss = max(stop_loss, entry_price - max_sl_dist)
             else:
                 stop_loss = min(stop_loss, entry_price + max_sl_dist)
+
+        # ── Minimum SL distance (prevents ultra-tight SL → oversized position) ──
+        # A SL too close to entry forces a huge notional to achieve the 1% risk budget,
+        # which in turn consumes most/all of the available balance as margin.
+        if settings.min_stop_loss_pct > 0:
+            min_sl_dist = entry_price * (settings.min_stop_loss_pct / 100.0)
+            if direction == "LONG" and (entry_price - stop_loss) < min_sl_dist:
+                stop_loss = entry_price - min_sl_dist
+                logger.debug("{} LONG SL too tight — widened to {:.6f} ({:.2f}% from entry)",
+                             symbol, stop_loss, settings.min_stop_loss_pct)
+            elif direction == "SHORT" and (stop_loss - entry_price) < min_sl_dist:
+                stop_loss = entry_price + min_sl_dist
+                logger.debug("{} SHORT SL too tight — widened to {:.6f} ({:.2f}% from entry)",
+                             symbol, stop_loss, settings.min_stop_loss_pct)
 
         # ── Risk-reward check ─────────────────────────────────────────────
         if direction == "LONG":
@@ -191,10 +208,53 @@ class RiskManager:
         risk_usdt = free_balance * (settings.risk_per_trade_pct / 100.0)
         leverage = settings.max_leverage
 
-        # Position size in quote currency
+        # Position size in quote currency (risk-based)
         risk_pct_of_entry = risk / entry_price
         position_size_usdt = risk_usdt / risk_pct_of_entry
-        position_size_usdt = min(position_size_usdt, free_balance * leverage)
+
+        # ── Hard cap: max margin per trade = max_position_size_pct % of free balance ──
+        # Prevents oversized positions when SL is tight (tight SL → large notional →
+        # most of the balance consumed as margin with nothing left for fees/funding).
+        # Example: max_position_size_pct=20, balance=1000, leverage=3
+        #   → max notional = 600 USDT, max margin = 200 USDT (20% of balance)
+        max_notional = free_balance * (settings.max_position_size_pct / 100.0) * leverage
+        if position_size_usdt > max_notional:
+            logger.debug(
+                "{} position capped: {:.2f} → {:.2f} USDT notional "
+                "(SL too tight relative to max_position_size_pct={:.0f}%%)",
+                symbol, position_size_usdt, max_notional, settings.max_position_size_pct,
+            )
+            position_size_usdt = max_notional
+
+        # ── Fee awareness ─────────────────────────────────────────────────
+        # Futures round-trip cost = taker fee × notional × 2 (entry + exit).
+        # Warn when fees consume a large slice of the risk budget — signals that
+        # either the balance is too small or the SL is too tight.
+        round_trip_fee_usdt = position_size_usdt * (settings.taker_fee_pct / 100.0) * 2.0
+        fee_ratio = round_trip_fee_usdt / risk_usdt if risk_usdt > 0 else 0.0
+        if fee_ratio > 0.20:
+            logger.warning(
+                "{} fees ≈ {:.4f} USDT ({:.1f}%% of {:.4f} USDT risk budget) — "
+                "SL may be too tight or balance too small",
+                symbol, round_trip_fee_usdt, fee_ratio * 100, risk_usdt,
+            )
+
+        # ── Final margin safety check ─────────────────────────────────────
+        # Ensure margin + estimated fees do not exceed 95% of free balance.
+        # (The remaining 5% covers funding rate deductions and liquidation buffer.)
+        margin_required = position_size_usdt / leverage
+        total_committed = margin_required + round_trip_fee_usdt
+        if total_committed > free_balance * 0.95:
+            logger.warning(
+                "{} margin ({:.2f}) + fees ({:.4f}) = {:.2f} USDT > 95%% of free balance "
+                "({:.2f} USDT) — position reduced",
+                symbol, margin_required, round_trip_fee_usdt, total_committed, free_balance,
+            )
+            safe_margin = free_balance * 0.95 - round_trip_fee_usdt
+            if safe_margin <= 0:
+                logger.warning("{} not enough free balance after fee reserve — skip", symbol)
+                return None
+            position_size_usdt = safe_margin * leverage
 
         quantity = position_size_usdt / entry_price
 
@@ -213,11 +273,12 @@ class RiskManager:
 
         logger.info(
             "RiskParams | {} {} | entry={} SL={} TP={} qty={} lev={} RR={} | "
-            "risk=${:.2f}  free_bal=${:.2f}  notional=${:.2f}  margin=${:.2f}",
+            "risk=${:.2f}  free_bal=${:.2f}  notional=${:.2f}  margin=${:.2f}  fees≈${:.4f}",
             symbol, direction, entry_price, stop_loss, take_profit,
             quantity, leverage, round(rr, 2),
             risk_usdt, free_balance, round(position_size_usdt, 2),
             round(position_size_usdt / leverage, 2),
+            round(round_trip_fee_usdt, 4),
         )
         return params
 
