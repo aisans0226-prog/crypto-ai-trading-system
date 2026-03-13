@@ -50,10 +50,19 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
 .ca{font-size:.7rem;color:var(--accent);cursor:pointer}
 /* stat cards */
 .sc{background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:15px}
-.sl{font-size:.7rem;color:var(--mut);text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px}
+.sl{font-size:.7rem;color:var(--mut);text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px;display:flex;align-items:center;gap:5px}
 .sv{font-size:1.5rem;font-weight:700;line-height:1}
 .svc{font-size:.69rem;margin-top:5px}
 .pos{color:var(--grn)}.neg{color:var(--red)}.neu{color:var(--mut)}
+/* balance edit */
+.bal-edit-btn{background:none;border:none;color:var(--mut);cursor:pointer;padding:2px 4px;font-size:.75rem;border-radius:4px;line-height:1;transition:color .15s;flex-shrink:0}
+.bal-edit-btn:hover{color:var(--accent)}
+.bal-manual-badge{font-size:.57rem;color:var(--yel);background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.3);padding:1px 6px;border-radius:4px}
+.bal-edit-form{margin-top:9px}
+.bal-edit-form input{width:100%;background:var(--bg3);color:var(--txt);border:1px solid var(--accent);border-radius:6px;padding:5px 9px;font-size:.82rem;outline:none}
+.bal-edit-form input:focus{border-color:var(--accent);box-shadow:0 0 0 2px rgba(0,212,170,.15)}
+.bal-edit-actions{display:flex;gap:5px;margin-top:6px}
+.bal-edit-actions .btn{flex:1;font-size:.72rem;padding:5px}
 /* heatmap */
 #hm{display:grid;grid-template-columns:repeat(auto-fill,minmax(85px,1fr));gap:5px}
 .hmc{padding:7px 5px;border-radius:6px;text-align:center;cursor:pointer;transition:transform .15s}
@@ -348,7 +357,24 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
 <!-- DASHBOARD PAGE -->
 <div class="page active" id="page-dashboard">
   <div class="sg">
-    <div class="sc"><div class="sl">Balance</div><div class="sv pos" id="s0">$--</div><div class="svc neu">Account equity</div></div>
+    <div class="sc">
+      <div class="sl">
+        Balance
+        <button class="bal-edit-btn" onclick="editBal()" title="Set manual balance">✏</button>
+        <span id="bal-manual-badge" class="bal-manual-badge" style="display:none">MANUAL</span>
+      </div>
+      <div class="sv pos" id="s0">$--</div>
+      <div class="svc neu" id="bal-sub">Account equity</div>
+      <div class="bal-edit-form" id="bal-edit-form" style="display:none">
+        <input type="number" id="bal-inp" step="1" min="1" placeholder="Balance (USDT)" onkeyup="if(event.key==='Enter')saveBal()" onkeydown="if(event.key==='Escape')cancelBal()"/>
+        <div class="bal-edit-actions">
+          <button class="btn bp" onclick="saveBal()">Set</button>
+          <button class="btn bo" onclick="cancelBal()">Cancel</button>
+          <button class="btn bo" onclick="clearBalOverride()" title="Revert to live exchange balance" style="font-size:.65rem;padding:4px 8px;color:var(--mut)">Clear</button>
+        </div>
+        <div style="margin-top:4px;font-size:.6rem;color:var(--mut)">PnL cộng trực tiếp vào số dư theo thời gian thực</div>
+      </div>
+    </div>
     <div class="sc"><div class="sl">Daily PnL</div><div class="sv" id="s1">$--</div><div class="svc neu">Today</div></div>
     <div class="sc"><div class="sl">Win Rate</div><div class="sv" id="s2">--%</div><div class="svc neu">All time</div></div>
     <div class="sc"><div class="sl">Open Trades</div><div class="sv" id="s3">--</div><div class="svc neu" id="s3-sub">Max --</div></div>
@@ -1142,10 +1168,12 @@ function toast(msg,tp){
   setTimeout(function(){el.remove();},4000);
 }
 
+var _wsConnected=false;
 function cwS(){
   var pr=location.protocol==='https:'?'wss':'ws';
   var ws=new WebSocket(pr+'://'+location.host+'/ws');
   ws.onopen=function(){
+    _wsConnected=true;
     document.getElementById('wdot').className='sd live';
     document.getElementById('wst').textContent='LIVE';
   };
@@ -1214,12 +1242,14 @@ function cwS(){
       }
     }
     if(d.type==='system_update')toast(d.data.message||'Updated',d.data.success?'ok':'err');
+    if(d.type==='bot_status')uBotStatus(d.data);
     if(d.type==='session_reset'){
       toast('✅ Session reset — backup đã lưu','suc');
       setTimeout(function(){lD();},600);
     }
   };
   ws.onclose=function(){
+    _wsConnected=false;
     document.getElementById('wdot').className='sd';
     document.getElementById('wst').textContent='Reconnecting';
     setTimeout(cwS,4000);
@@ -1252,6 +1282,18 @@ function uSt(d){
   function fe(id,v,c){var e=document.getElementById(id);if(e){e.textContent=v;if(c!==undefined)e.className='sv '+c;}}
   function fm(v,dc){return v!=null&&!isNaN(v)?Number(v).toFixed(dc!=null?dc:2):'--';}
   fe('s0','$'+fm(d.balance),'pos');
+  // Manual balance badge + sub-text
+  var mBadge=document.getElementById('bal-manual-badge');
+  if(mBadge)mBadge.style.display=(d.manual_balance_active?'inline':'none');
+  var balSub=document.getElementById('bal-sub');
+  if(balSub){
+    if(d.manual_balance_active){
+      var tp=d.total_pnl||0;
+      balSub.innerHTML='Manual&nbsp;+&nbsp;PnL:&nbsp;<span class="'+(tp>=0?'pos':'neg')+'">'+(tp>=0?'+':'')+'$'+fm(Math.abs(tp))+'</span>';
+    } else {
+      balSub.textContent='Account equity';
+    }
+  }
   var dp=d.daily_pnl||0;
   fe('s1',(dp>=0?'+':'')+'$'+fm(dp),(dp>=0?'pos':'neg'));
   fe('s2',fm(d.win_rate,1)+'%',(d.win_rate||0)>=50?'pos':'neg');
@@ -1274,8 +1316,48 @@ function uSt(d){
   fe('s8',(upnl>=0?'+':'')+'$'+fm(Math.abs(upnl)),(upnl>=0?'pos':'neg'));
 }
 
+// ── Balance manual override ──────────────────────────────────────────────
+function editBal(){
+  var form=document.getElementById('bal-edit-form');
+  var inp=document.getElementById('bal-inp');
+  if(!form)return;
+  var cur=(document.getElementById('s0').textContent||'').replace(/[$,+\s]/g,'');
+  if(cur&&!isNaN(parseFloat(cur)))inp.value=parseFloat(cur);
+  form.style.display='block';
+  inp.focus();inp.select();
+}
+function cancelBal(){
+  document.getElementById('bal-edit-form').style.display='none';
+}
+async function saveBal(){
+  var v=parseFloat(document.getElementById('bal-inp').value);
+  if(!v||v<=0){toast('Nhập số dư hợp lệ > 0 USDT','err');return;}
+  var r=await ap('/api/set-balance','POST',{balance:v});
+  if(r.ok){
+    document.getElementById('bal-edit-form').style.display='none';
+    toast('✅ Balance đã set $'+v.toFixed(2)+' — PnL cộng livetimethực','ok');
+  } else {
+    toast('Lỗi: '+(r.error||'thất bại'),'err');
+  }
+}
+async function clearBalOverride(){
+  var r=await ap('/api/set-balance','POST',{clear:true});
+  if(r.ok){
+    document.getElementById('bal-edit-form').style.display='none';
+    var mBadge=document.getElementById('bal-manual-badge');
+    if(mBadge)mBadge.style.display='none';
+    var sub=document.getElementById('bal-sub');if(sub)sub.textContent='Account equity';
+    toast('Balance về live exchange','ok');
+  } else toast('Lỗi xoá override','err');
+}
+
 async function lBotStatus(){
   var d=await ap('/api/bot-status');
+  uBotStatus(d);
+}
+
+// Shared updater — called by both REST poll and WS bot_status event
+function uBotStatus(d){
   function se(id,v){var e=document.getElementById(id);if(e)e.textContent=v;}
   se('bst-mode', d.training_mode?'TRAINING MODE':'LIVE '+(d.dry_run?'(DRY)':''));
   se('bst-thr','Score ≥ '+d.score_threshold);
@@ -1290,7 +1372,7 @@ async function lBotStatus(){
   var dtEl=document.getElementById('s7');
   if(dtEl)dtEl.textContent=d.daily_trades_today!=null?d.daily_trades_today:'--';
   var dtSub=document.getElementById('s7-sub');
-  if(dtSub)dtSub.textContent='Max '+d.max_daily_trades+' today';
+  if(dtSub)dtSub.textContent='Max '+(d.max_daily_trades||3)+' today';
   // Color mode badge
   var mEl=document.getElementById('bst-mode');
   if(mEl)mEl.className='bsv '+(d.training_mode?'badge-yel':d.dry_run?'badge-acc':'badge-green');
@@ -2586,15 +2668,19 @@ async function saveAI(){
     _tick++;
     var pg=document.querySelector('.page.active');
     var id=(pg?pg.id:'page-dashboard').replace('page-','');
-    if(id==='dashboard'){
-      var m=await ap('/api/metrics');uSt(m);bPC(m);bWL(m);
-      if(_tick%3===0)lBotStatus(); // refresh bot status every 30s
+    // Dashboard metrics + positions are pushed via WS every 5s — only poll as fallback
+    if(!_wsConnected){
+      if(id==='dashboard'){var m=await ap('/api/metrics');uSt(m);bPC(m);bWL(m);}
+      if(id==='signals')await lSD();
+      if(id==='heatmap')await lHM();
+      if(id==='trades')await lTr();
+      if(_tick%3===0)lBotStatus();
     }
-    if(id==='signals')await lSD();
-    if(id==='heatmap')await lHM();
-    if(id==='trades')await lTr();
+    // History + CoinDB are not streamed via WS — always poll at reduced rate
     if(id==='history'&&_tick%3===0)await lHistory();
     if(id==='coindb'&&_tick%3===0)await lCoinDB();
+    // Performance page: poll every 30s regardless of WS
+    if(id==='performance'&&_tick%3===0)await lPf();
   },10000);
 })();
 

@@ -62,6 +62,26 @@ class AppState:
 state = AppState()
 
 
+def _make_bot_status_payload() -> dict:
+    """Build bot operational status dict — used in WS broadcast and initial push."""
+    import time as _t
+    from config import settings as _cfg
+    started = state.bot_stats.get("started_at")
+    return {
+        "last_scan_ts":       state.bot_stats.get("last_scan_ts"),
+        "watchlist_count":    state.bot_stats.get("watchlist_count", 0),
+        "daily_trades_today": state.bot_stats.get("daily_trades_today", 0),
+        "scan_cycle":         state.bot_stats.get("scan_cycle", 0),
+        "uptime_seconds":     round(_t.time() - started, 0) if started else 0,
+        "signals_in_memory":  len(state.recent_signals),
+        "training_mode":      _cfg.effective_training_mode,
+        "dry_run":            getattr(_cfg, "dry_run", False),
+        "score_threshold":    _cfg.effective_signal_score_threshold,
+        "max_daily_trades":   _cfg.effective_max_daily_trades,
+        "is_paused":          getattr(state.trading_system, "is_paused", False) if state.trading_system else False,
+    }
+
+
 async def broadcast(event: str, payload: dict) -> None:
     msg = json.dumps({"type": event, "data": payload, "ts": datetime.utcnow().isoformat()})
     dead: List[WebSocket] = []
@@ -187,7 +207,35 @@ async def get_portfolio():
     positions = await state.portfolio_manager.get_open_positions()
     exposure  = await state.portfolio_manager.get_risk_exposure()
     await _enrich_positions(positions)
-    return {"balance": balance, "positions": positions, "risk_exposure": exposure}
+    return {
+        "balance": balance,
+        "positions": positions,
+        "risk_exposure": exposure,
+        "manual_balance_active": state.portfolio_manager.is_manual_balance_active(),
+    }
+
+
+@app.post("/api/set-balance")
+async def set_balance_override(request: Request):
+    """Set a manual account balance. PnL from closed trades compounds on top in real-time."""
+    if not state.portfolio_manager:
+        return {"ok": False, "error": "Portfolio not initialised"}
+    body = await request.json()
+
+    if body.get("clear"):
+        await state.portfolio_manager.clear_manual_balance()
+        return {"ok": True, "message": "Manual balance cleared — using live exchange data"}
+
+    balance = body.get("balance")
+    if not balance or float(balance) <= 0:
+        return {"ok": False, "error": "Balance must be > 0"}
+
+    balance = float(balance)
+    await state.portfolio_manager.set_manual_balance(balance)
+    # Sync risk manager so position sizing uses the new balance immediately
+    if state.trading_system and hasattr(state.trading_system, "_risk"):
+        state.trading_system._risk.update_balance(balance)
+    return {"ok": True, "message": f"Balance set to ${balance:.2f}"}
 
 
 @app.get("/api/metrics")
@@ -1277,6 +1325,10 @@ async def _realtime_loop() -> None:
                 await broadcast("pending_orders", {"orders": pending_list})
             else:
                 await broadcast("pending_orders", {"orders": []})
+
+            # Broadcast bot operational status so dashboard stats stay live
+            await broadcast("bot_status", _make_bot_status_payload())
+
         except Exception as exc:
             logger.warning("Realtime broadcast error: {}", exc)
 
@@ -1305,6 +1357,12 @@ async def ws_endpoint(websocket: WebSocket):
             await websocket.send_text(json.dumps({
                 "type": "positions",
                 "data": {"positions": positions, "exposure": exposure},
+                "ts": datetime.utcnow().isoformat(),
+            }))
+            # Push bot status immediately so panel shows live data on connect
+            await websocket.send_text(json.dumps({
+                "type": "bot_status",
+                "data": _make_bot_status_payload(),
                 "ts": datetime.utcnow().isoformat(),
             }))
         except Exception:

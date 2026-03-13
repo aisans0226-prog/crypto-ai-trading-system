@@ -73,6 +73,7 @@ class PortfolioManager:
         )
         self._redis: Optional[aioredis.Redis] = None
         self._balance = settings.account_balance_usdt
+        self._manual_balance_override: bool = False   # True = ignore live exchange updates
         self._open_positions: Dict[str, dict] = {}
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
@@ -87,6 +88,14 @@ class PortfolioManager:
             self._redis = await aioredis.from_url(settings.redis_url)
             await self._redis.ping()
             logger.info("PortfolioManager started (Redis connected)")
+            # Restore manual balance override if it was set before restart
+            manual = await self._redis.get("portfolio:manual_balance")
+            if manual:
+                self._manual_balance_override = True
+                # Use portfolio:balance (includes accumulated PnL), not the original set amount
+                current = await self._redis.get("portfolio:balance")
+                self._balance = float(current) if current else float(manual)
+                logger.info("Restored manual balance override: ${:.2f}", self._balance)
         except Exception as exc:
             logger.warning("Redis unavailable ({}), running in-memory mode", exc)
             self._redis = None
@@ -138,9 +147,30 @@ class PortfolioManager:
         return self._balance
 
     async def update_balance(self, balance: float) -> None:
+        if self._manual_balance_override:
+            return  # Never overwrite user-set balance with live exchange data
         self._balance = balance
         if self._redis:
             await self._redis.set("portfolio:balance", balance)
+
+    async def set_manual_balance(self, amount: float) -> None:
+        """Set a manual starting balance. PnL from every closed trade compounds on top."""
+        self._balance = amount
+        self._manual_balance_override = True
+        if self._redis:
+            await self._redis.set("portfolio:balance", amount)
+            await self._redis.set("portfolio:manual_balance", amount)
+        logger.info("Manual balance set: ${:.2f}", amount)
+
+    async def clear_manual_balance(self) -> None:
+        """Remove manual override — balance reverts to live exchange data."""
+        self._manual_balance_override = False
+        if self._redis:
+            await self._redis.delete("portfolio:manual_balance")
+        logger.info("Manual balance override cleared")
+
+    def is_manual_balance_active(self) -> bool:
+        return self._manual_balance_override
 
     # ── Open positions ────────────────────────────────────────────────────
     async def get_open_positions(self) -> Dict[str, dict]:
@@ -255,6 +285,7 @@ class PortfolioManager:
             "gross_profit": 0.0,
             "gross_loss": 0.0,
             "total_funding_fees": 0.0,
+            "manual_balance_active": self._manual_balance_override,
         }
         if not trades:
             return base
@@ -313,6 +344,7 @@ class PortfolioManager:
             "gross_profit": round(gross_profit, 2),
             "gross_loss": round(gross_loss, 2),
             "total_funding_fees": round(sum(t.funding_fee_usdt or 0.0 for t in trades), 4),
+            "manual_balance_active": self._manual_balance_override,
         }
 
     async def save_performance_snapshot(self) -> None:
