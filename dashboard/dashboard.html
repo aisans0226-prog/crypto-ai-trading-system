@@ -359,12 +359,12 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
   <div class="sg">
     <div class="sc">
       <div class="sl">
-        Balance
+        Total Equity <span class="live-dot" style="margin-left:3px"></span>
         <button class="bal-edit-btn" onclick="editBal()" title="Set manual balance">✏</button>
         <span id="bal-manual-badge" class="bal-manual-badge" style="display:none">MANUAL</span>
       </div>
       <div class="sv pos" id="s0">$--</div>
-      <div class="svc neu" id="bal-sub">Account equity</div>
+      <div class="svc neu" id="bal-sub">Base $-- &nbsp;+&nbsp; Unreal $--</div>
       <div class="bal-edit-form" id="bal-edit-form" style="display:none">
         <input type="number" id="bal-inp" step="1" min="1" placeholder="Balance (USDT)" onkeyup="if(event.key==='Enter')saveBal()" onkeydown="if(event.key==='Escape')cancelBal()"/>
         <div class="bal-edit-actions">
@@ -1106,6 +1106,7 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
 var pC=null,wC=null,rkC=null,lC=null,cpC=null,prC=null,mpC=null,wdC=null,lnCurveC=null,resQualC=null,hrC=null,sdC=null,wrHC=null,wrWC=null;
 var aS=[],aR=[],_rawHistData=[];
 var _prices={};         // live prices from WS tickers event { SYMBOL: price }
+var _lastBalance=0;     // last known base balance for equity recalculation on position push
 var _posPrevPrices={};  // previous prices for flash direction in Open Positions
 var _livePositions={};  // latest enriched positions (cache for live price injection)
 var _posRefTimerId=null;// polling interval handle for trades page
@@ -1190,6 +1191,17 @@ function cwS(){
       var _upnl=Object.values(_livePositions).reduce(function(s,p){return s+(p.unrealized_pnl_usdt||0);},0);
       var _s8=document.getElementById('s8');
       if(_s8){var _uv=Math.round(_upnl*100)/100;_s8.textContent=(_uv>=0?'+':'')+'$'+Math.abs(_uv).toFixed(2);_s8.className='sv '+(_uv>=0?'pos':'neg');}
+      // Recalculate Total Equity (s0) in real-time: base balance + live unrealized PnL
+      if(_lastBalance>0){
+        var _eq=Math.round((_lastBalance+_upnl)*100)/100;
+        var _s0=document.getElementById('s0');if(_s0)_s0.textContent='$'+_eq.toFixed(2);
+        var _bsub=document.getElementById('bal-sub');
+        var _mBadge=document.getElementById('bal-manual-badge');
+        if(_bsub&&(!_mBadge||_mBadge.style.display==='none')){
+          var _us=Math.round(_upnl*100)/100;
+          _bsub.innerHTML='Base <span style="color:var(--txt)">$'+_lastBalance.toFixed(2)+'</span>&nbsp;&nbsp;|&nbsp;&nbsp;Unreal <span class="'+(_us>=0?'pos':'neg')+'">'+((_us>=0?'+':'')+'$'+Math.abs(_us).toFixed(2))+'</span>';
+        }
+      }
       var tsEl=document.getElementById('pos-live-ts');
       if(tsEl)tsEl.textContent='⊕ '+new Date().toLocaleTimeString();
     }
@@ -1281,8 +1293,13 @@ async function lD(){
 function uSt(d){
   function fe(id,v,c){var e=document.getElementById(id);if(e){e.textContent=v;if(c!==undefined)e.className='sv '+c;}}
   function fm(v,dc){return v!=null&&!isNaN(v)?Number(v).toFixed(dc!=null?dc:2):'--';}
-  fe('s0','$'+fm(d.balance),'pos');
-  // Manual balance badge + sub-text
+  // Store base balance for equity recalc on position updates
+  if(d.balance!=null&&d.balance>0)_lastBalance=d.balance;
+  // Total Equity = base balance + unrealized PnL (like exchange wallet view)
+  var upnl=d.total_unrealized_pnl||0;
+  var equity=d.balance!=null?d.balance+upnl:null;
+  fe('s0',equity!=null?'$'+fm(equity):'$--','pos');
+  // Balance card sub-text breakdown
   var mBadge=document.getElementById('bal-manual-badge');
   if(mBadge)mBadge.style.display=(d.manual_balance_active?'inline':'none');
   var balSub=document.getElementById('bal-sub');
@@ -1291,7 +1308,8 @@ function uSt(d){
       var tp=d.total_pnl||0;
       balSub.innerHTML='Manual&nbsp;+&nbsp;PnL:&nbsp;<span class="'+(tp>=0?'pos':'neg')+'">'+(tp>=0?'+':'')+'$'+fm(Math.abs(tp))+'</span>';
     } else {
-      balSub.textContent='Account equity';
+      var us=Math.round(upnl*100)/100;
+      balSub.innerHTML='Base <span style="color:var(--txt)">$'+fm(d.balance)+'</span>&nbsp;&nbsp;|&nbsp;&nbsp;Unreal <span class="'+(us>=0?'pos':'neg')+'">'+(us>=0?'+':'')+'$'+fm(Math.abs(us))+'</span>';
     }
   }
   var dp=d.daily_pnl||0;
@@ -1472,20 +1490,31 @@ function dRnk(){
 }
 
 function bPC(m){
-  var ctx=document.getElementById('pc');if(!ctx)return;if(pC)pC.destroy();
+  var ctx=document.getElementById('pc');if(!ctx)return;
   var trend=m&&m.pnl_trend&&m.pnl_trend.length?m.pnl_trend:[];
   var lbs=trend.length?trend.map(function(t){return t.label;}):['No trades yet'];
   var dt=trend.map(function(t){return t.pnl;});
+  if(pC){pC.data.labels=lbs;pC.data.datasets[0].data=dt;pC.update('none');return;}
   pC=new Chart(ctx,{type:'line',data:{labels:lbs,datasets:[{label:'PnL',data:dt,borderColor:'#00d4aa',backgroundColor:'rgba(0,212,170,.07)',fill:true,tension:.4,pointRadius:2}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{color:'rgba(255,255,255,.04)'},ticks:{color:'#64748b',maxTicksLimit:6}},y:{grid:{color:'rgba(255,255,255,.04)'},ticks:{color:'#64748b'}}}}});
 }
 
 function bWL(m){
-  var ctx=document.getElementById('wlc');if(!ctx)return;if(wC)wC.destroy();
+  var ctx=document.getElementById('wlc');if(!ctx)return;
   var tot=m.total_trades||0;
   // Prefer explicit counts from backend; fall back to deriving from win_rate
   var wins=m.wins_count!=null?m.wins_count:Math.round((m.win_rate||0)/100*tot);
   var losses=m.losses_count!=null?m.losses_count:tot-wins;
-  if(!tot){
+  var noData=!tot;
+  if(wC){
+    var curNoData=(wC.data.labels[0]==='No trades yet');
+    if(curNoData===noData){
+      // Same mode — update data in-place without flicker
+      if(!noData){wC.data.datasets[0].data=[wins,losses];}
+      wC.update('none');return;
+    }
+    wC.destroy();
+  }
+  if(noData){
     wC=new Chart(ctx,{type:'doughnut',data:{labels:['No trades yet'],datasets:[{data:[1],backgroundColor:['#1c2a3e'],borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,cutout:'70%',plugins:{legend:{position:'bottom',labels:{color:'#64748b',padding:10,boxWidth:10}}}}});
     return;
   }
