@@ -373,26 +373,75 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
 
 <!-- SELF LEARNING PAGE -->
 <div class="page" id="page-learning">
-  <div class="tc">
+  <!-- KPI cards row -->
+  <div class="sg" id="ln-kpi" style="margin-bottom:14px"></div>
+
+  <!-- Charts row: learning curve + signal funnel -->
+  <div class="cg" style="margin-bottom:14px">
     <div class="card">
-      <div class="ch"><span class="ct2">Learning Engine Stats</span></div>
+      <div class="ch">
+        <span class="ct2">Learning Curve — Rolling Win Rate (10-trade window)</span>
+        <span id="ln-trend-badge" style="font-size:.68rem;padding:2px 8px;border-radius:12px"></span>
+      </div>
+      <div class="cw"><canvas id="lnCurveCanvas"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="ch"><span class="ct2">Signal → Trade Funnel</span></div>
+      <div id="lnFunnel" style="padding:4px 0">Loading...</div>
+    </div>
+  </div>
+
+  <!-- Research quality + Feature importance row -->
+  <div class="cg" style="margin-bottom:14px">
+    <div class="card">
+      <div class="ch">
+        <span class="ct2">Research Score vs Win Rate</span>
+        <span style="font-size:.68rem;color:var(--mut)">Does higher research score → more wins?</span>
+      </div>
+      <div class="cw"><canvas id="resQualCanvas"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="ch">
+        <span class="ct2">Feature Importance (XGBoost)</span>
+        <span style="font-size:.68rem;color:var(--mut)">Which indicators the model weights most</span>
+      </div>
+      <div id="featImp" style="padding:4px 0">Loading...</div>
+    </div>
+  </div>
+
+  <!-- Training status + Top coins -->
+  <div class="tc" style="margin-bottom:14px">
+    <div class="card">
+      <div class="ch"><span class="ct2">Model Training Status</span></div>
       <div id="lnst">Loading...</div>
       <div style="margin-top:12px">
-        <div class="ct2" style="margin-bottom:5px">Training Progress</div>
+        <div class="ct2" style="margin-bottom:5px">Progress to Next Retrain</div>
         <div class="prog" style="margin-bottom:5px"><div class="bar" id="rbar" style="width:0%"></div></div>
         <div id="rlbl" style="font-size:.69rem;color:var(--mut)">-- / 50 until next retrain</div>
       </div>
     </div>
     <div class="card">
-      <div class="ch"><span class="ct2">Top Coins by Win Rate</span></div>
+      <div class="ch"><span class="ct2">Top Learned Coins</span></div>
       <div id="tclst">Loading...</div>
     </div>
   </div>
+
+  <!-- Recent labeled trades timeline -->
+  <div class="card fw" style="margin-bottom:14px">
+    <div class="ch">
+      <span class="ct2">Recent Labeled Trades</span>
+      <span style="font-size:.68rem;color:var(--mut)">AI is building knowledge from these</span>
+    </div>
+    <div id="lnTimeline">Loading...</div>
+  </div>
+
+  <!-- Win rate distribution chart -->
   <div class="card fw">
-    <div class="ch"><span class="ct2">Win Rate Distribution</span></div>
+    <div class="ch"><span class="ct2">Win Rate Distribution by Coin</span></div>
     <div class="cw"><canvas id="lnc"></canvas></div>
   </div>
 </div>
+
 
 <!-- TRADES PAGE -->
 <div class="page" id="page-trades">
@@ -759,7 +808,7 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
 </div>
 
 <script>
-var pC=null,wC=null,rkC=null,lC=null,cpC=null,prC=null,mpC=null,wdC=null;
+var pC=null,wC=null,rkC=null,lC=null,cpC=null,prC=null,mpC=null,wdC=null,lnCurveC=null,resQualC=null;
 var aS=[],aR=[],_rawHistData=[];
 var _prices={};         // live prices from WS tickers event { SYMBOL: price }
 var _posPrevPrices={};  // previous prices for flash direction in Open Positions
@@ -1085,15 +1134,199 @@ function bRd(r){
 }
 
 async function lLn(){
-  var d=await ap('/api/learning-stats');var st=d.stats||{},tc=d.top_coins||[];
+  var[d,ins]=await Promise.all([ap('/api/learning-stats'),ap('/api/learning-insights')]);
+  var st=d.stats||{},tc=d.top_coins||[];
+  var trendMap={'improving':'<span class="pos">↑ Improving</span>','declining':'<span class="neg">↓ Declining</span>','stable':'<span class="neu">→ Stable</span>','insufficient_data':'<span style="color:var(--mut)">– Not enough data</span>'};
+
+  // ── KPI cards ──────────────────────────────────────────────────────────
+  var kpiEl=document.getElementById('ln-kpi');
+  if(kpiEl){var trendHtml=trendMap[st.learning_trend]||'';
+    var wr10s=st.win_rate_last_10!=null?st.win_rate_last_10+'%':'--';
+    var wr10cls=st.win_rate_last_10!=null?(st.win_rate_last_10>=50?'pos':'neg'):'';
+    var kpiItems=[
+      ['Total Samples',(st.total_samples||0),''],
+      ['Labeled Wins / Losses',(st.wins||0)+' / '+(st.losses||0),''],
+      ['Overall Win Rate',(st.overall_win_rate||0)+'%',(st.overall_win_rate||0)>=50?'pos':'neg'],
+      ['Win Rate (last 10)',wr10s,wr10cls],
+      ['Coins Tracked',(st.coins_tracked||0),''],
+      ['Retrains Done',(st.retrain_count||0),''],
+    ];
+    kpiEl.innerHTML=kpiItems.map(function(x){return '<div class="sc"><div class="sl">'+x[0]+'</div><div class="sv '+x[2]+'">'+x[1]+'</div></div>';}).join('');
+    // Trend badge
+    var badge=document.getElementById('ln-trend-badge');
+    if(badge){
+      var tMap={improving:'background:rgba(16,185,129,.15);color:var(--grn);border:1px solid var(--grn)',declining:'background:rgba(255,68,102,.12);color:var(--red);border:1px solid var(--red)',stable:'background:rgba(251,191,36,.12);color:var(--yel);border:1px solid var(--yel)'};
+      var tLabel={improving:'↑ Improving',declining:'↓ Declining',stable:'→ Stable'};
+      if(tMap[st.learning_trend]){badge.style.cssText=tMap[st.learning_trend];badge.textContent=tLabel[st.learning_trend];}
+      else{badge.style.display='none';}
+    }
+  }
+
+  // ── Training status table ───────────────────────────────────────────────
   var el=document.getElementById('lnst');
-  el.innerHTML='<table class="tbl"><tr><td class="neu">Total samples</td><td><strong>'+(st.total_samples||0)+'</strong></td></tr><tr><td class="neu">Win rate</td><td class="'+(+(st.overall_win_rate||0)>=50?'pos':'neg')+'"><strong>'+(st.overall_win_rate||0)+'%</strong></td></tr><tr><td class="neu">Coins tracked</td><td>'+(st.coins_tracked||0)+'</td></tr><tr><td class="neu">Pending labels</td><td>'+(st.pending_labels||0)+'</td></tr></table>';
-  var pct=(st.new_since_retrain||0)/50*100;
+  if(el){
+    var lr=st.last_retrain_ts?new Date(st.last_retrain_ts).toLocaleString():'Never';
+    var needRow=st.model_trained?'':'<tr><td class="neu">Samples for first train</td><td class="neu">'+(st.samples_needed_for_first||30)+' more needed</td></tr>';
+    el.innerHTML='<table class="tbl">'
+      +'<tr><td class="neu">Total labeled</td><td><strong>'+(st.total_samples||0)+'</strong></td></tr>'
+      +'<tr><td class="neu">Wins / Losses</td><td><span class="pos">'+(st.wins||0)+'</span> / <span class="neg">'+(st.losses||0)+'</span></td></tr>'
+      +'<tr><td class="neu">Overall win rate</td><td class="'+(+(st.overall_win_rate||0)>=50?'pos':'neg')+'"><strong>'+(st.overall_win_rate||0)+'%</strong></td></tr>'
+      +'<tr><td class="neu">Win rate (last 10)</td><td class="'+(st.win_rate_last_10!=null?(st.win_rate_last_10>=50?'pos':'neg'):'')+'"><strong>'+(st.win_rate_last_10!=null?st.win_rate_last_10+'%':'--')+'</strong></td></tr>'
+      +'<tr><td class="neu">Win rate (last 20)</td><td>'+(st.win_rate_last_20!=null?st.win_rate_last_20+'%':'--')+'</td></tr>'
+      +'<tr><td class="neu">Learning trend</td><td>'+(trendMap[st.learning_trend]||'--')+'</td></tr>'
+      +'<tr><td class="neu">DB connected</td><td>'+(st.db_connected?'<span class="pos">Yes</span>':'<span class="neg">No</span>')+'</td></tr>'
+      +'<tr><td class="neu">Pending labels</td><td>'+(st.pending_labels||0)+'</td></tr>'
+      +'<tr><td class="neu">Last retrain</td><td class="neu">'+lr+'</td></tr>'
+      +'<tr><td class="neu">Total retrains</td><td>'+(st.retrain_count||0)+'</td></tr>'
+      +needRow
+      +'</table>';
+  }
+
+  // Progress bar
+  var pct=(st.new_since_retrain||0)/(st.retrain_threshold||50)*100;
   var bar=document.getElementById('rbar');if(bar)bar.style.width=pct+'%';
-  var lbl=document.getElementById('rlbl');if(lbl)lbl.textContent=(st.new_since_retrain||0)+' / 50 until next retrain';
+  var lbl=document.getElementById('rlbl');if(lbl)lbl.textContent=(st.new_since_retrain||0)+' / '+(st.retrain_threshold||50)+' until next retrain';
+
+  // ── Top learned coins (with inline bar) ────────────────────────────────
   var tce=document.getElementById('tclst');
-  tce.innerHTML=tc.length?tc.map(function(c){return '<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-weight:700">'+c.symbol+'</span><span class="'+(c.win_rate>=55?'pos':c.win_rate>=45?'neu':'neg')+'">'+c.win_rate+'%</span></div>';}).join(''):'<div style="color:var(--mut);font-size:.76rem;padding:6px">Need 2+ trades per coin to show stats</div>';
+  if(tce){
+    tce.innerHTML=tc.length?tc.map(function(c){
+      var bw=c.win_rate.toFixed(0)+'%';
+      var bc=c.win_rate>=60?'var(--grn)':c.win_rate>=50?'var(--yel)':'var(--red)';
+      return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border)">'
+        +'<span style="min-width:90px;font-weight:700;font-size:.79rem">'+c.symbol+'</span>'
+        +'<div style="flex:1;height:6px;background:var(--bg3);border-radius:3px;overflow:hidden">'
+        +'<div style="width:'+bw+';height:100%;background:'+bc+';border-radius:3px"></div></div>'
+        +'<span class="'+(c.win_rate>=55?'pos':c.win_rate>=45?'neu':'neg')+'" style="min-width:36px;text-align:right;font-size:.78rem">'+c.win_rate+'%</span>'
+        +'<span style="font-size:.67rem;color:var(--mut)">'+c.total+' trades</span>'
+        +'</div>';
+    }).join(''):'<div style="color:var(--mut);font-size:.76rem;padding:6px">Need 2+ trades per coin to show stats</div>';
+  }
+
+  // Win-rate dist chart
   bLC(tc);
+
+  // ── Learning curve chart ────────────────────────────────────────────────
+  var rwData=ins.rolling_wr_chart||[];
+  var lcCtx=document.getElementById('lnCurveCanvas');
+  if(lcCtx){
+    if(lnCurveC)lnCurveC.destroy();
+    if(rwData.length>=3){
+      var lcLbs=rwData.map(function(p){return '#'+p.idx;});
+      var lcVals=rwData.map(function(p){return p.wr;});
+      lnCurveC=new Chart(lcCtx,{type:'line',data:{labels:lcLbs,datasets:[
+        {label:'Rolling Win Rate',data:lcVals,borderColor:'#00d4aa',backgroundColor:'rgba(0,212,170,.07)',fill:true,tension:.4,pointRadius:2},
+        {label:'50% baseline',data:new Array(lcVals.length).fill(50),borderColor:'rgba(255,255,255,.18)',borderDash:[5,5],pointRadius:0,fill:false}
+      ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:'#94a3b8',font:{size:10}}}},
+        scales:{
+          x:{grid:{color:'rgba(255,255,255,.04)'},ticks:{color:'#64748b',maxTicksLimit:10}},
+          y:{grid:{color:'rgba(255,255,255,.04)'},ticks:{color:'#64748b'},min:0,max:100,title:{display:true,text:'Win Rate %',color:'#64748b',font:{size:10}}}
+        }
+      }});
+    }else{lcCtx.parentElement.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:140px;color:var(--mut);font-size:.76rem;text-align:center">Collecting trade data…<br>Learning curve appears after 3+ closed trades</div>';}
+  }
+
+  // ── Signal funnel ───────────────────────────────────────────────────────
+  var fncEl=document.getElementById('lnFunnel');
+  var fun=ins.funnel||{};
+  if(fncEl){
+    var steps=[
+      {lbl:'Signals Scanned',val:fun.scanned||0,col:'var(--a2)'},
+      {lbl:'Deep Researched',val:fun.researched||0,col:'var(--yel)'},
+      {lbl:'Trades Executed',val:fun.executed||0,col:'var(--accent)'},
+      {lbl:'Winning Trades',val:fun.wins||0,col:'var(--grn)'},
+      {lbl:'Losing Trades',val:fun.losses||0,col:'var(--red)'},
+    ];
+    var mx=Math.max.apply(null,steps.map(function(s){return s.val;}),1);
+    fncEl.innerHTML=steps.map(function(s){
+      var pw=mx>0?Math.round(s.val/mx*100):0;
+      var pctOf=steps[0].val>0?'('+Math.round(s.val/steps[0].val*100)+'% of total)':'';
+      return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">'
+        +'<span style="min-width:130px;font-size:.75rem;color:var(--mut)">'+s.lbl+'</span>'
+        +'<div style="flex:1;height:20px;background:var(--bg3);border-radius:4px;overflow:hidden">'
+        +'<div style="width:'+pw+'%;height:100%;background:'+s.col+';border-radius:4px;opacity:.8;transition:width .5s"></div></div>'
+        +'<span style="font-weight:700;font-size:.85rem;min-width:40px;text-align:right">'+s.val+'</span>'
+        +'<span style="font-size:.67rem;color:var(--mut);min-width:72px">'+pctOf+'</span>'
+        +'</div>';
+    }).join('');
+  }
+
+  // ── Research score vs win rate chart ────────────────────────────────────
+  var buckets=ins.research_buckets||[];
+  var rqCtx=document.getElementById('resQualCanvas');
+  if(rqCtx){
+    if(resQualC)resQualC.destroy();
+    if(buckets.some(function(b){return b.total>0;})){
+      var rqLbs=buckets.map(function(b){return b.range;});
+      var rqWR=buckets.map(function(b){return b.win_rate;});
+      var rqTot=buckets.map(function(b){return b.total;});
+      resQualC=new Chart(rqCtx,{type:'bar',data:{labels:rqLbs,datasets:[
+        {label:'Win Rate %',data:rqWR,backgroundColor:rqWR.map(function(v){return v>=60?'rgba(16,185,129,.75)':v>=50?'rgba(251,191,36,.75)':'rgba(255,68,102,.75)';}),borderRadius:4,yAxisID:'y'},
+        {label:'Trades',data:rqTot,type:'line',borderColor:'rgba(99,102,241,.7)',backgroundColor:'rgba(99,102,241,.1)',pointRadius:4,fill:false,yAxisID:'y1'}
+      ]},options:{responsive:true,maintainAspectRatio:false,
+        plugins:{legend:{labels:{color:'#94a3b8',font:{size:10}}}},
+        scales:{
+          x:{grid:{color:'rgba(255,255,255,.04)'},ticks:{color:'#64748b'},title:{display:true,text:'Research Score Range',color:'#64748b',font:{size:10}}},
+          y:{grid:{color:'rgba(255,255,255,.04)'},ticks:{color:'#64748b'},min:0,max:100,title:{display:true,text:'Win Rate %',color:'#64748b',font:{size:10}}},
+          y1:{position:'right',grid:{drawOnChartArea:false},ticks:{color:'#64748b'},title:{display:true,text:'Trade Count',color:'#64748b',font:{size:10}}}
+        }
+      }});
+    }else{rqCtx.parentElement.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:140px;color:var(--mut);font-size:.76rem;text-align:center">Research quality data appears<br>after first trades close with outcomes</div>';}
+  }
+
+  // ── Feature importance ───────────────────────────────────────────────────
+  var fiEl=document.getElementById('featImp');
+  var fi=ins.feature_importance||[];
+  if(fiEl){
+    if(fi.length){
+      var mxImp=Math.max.apply(null,fi.map(function(x){return x.importance;}),0.0001);
+      fiEl.innerHTML='<div style="font-size:.69rem;color:var(--mut);margin-bottom:8px">Based on '+st.retrain_count+' retrain(s) from '+st.total_samples+' labeled samples</div>'
+        +fi.map(function(f){
+          var pw=Math.round(f.importance/mxImp*100);
+          var pct=(f.importance*100).toFixed(1);
+          return '<div style="display:flex;align-items:center;gap:8px;padding:3px 0">'
+            +'<span style="min-width:110px;font-size:.72rem;font-family:monospace;color:var(--txt);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+f.feature+'</span>'
+            +'<div style="flex:1;height:14px;background:var(--bg3);border-radius:3px;overflow:hidden">'
+            +'<div style="width:'+pw+'%;height:100%;background:rgba(99,102,241,.65);border-radius:3px"></div></div>'
+            +'<span style="min-width:40px;text-align:right;font-size:.7rem;color:var(--mut)">'+pct+'%</span>'
+            +'</div>';
+        }).join('');
+    }else{
+      fiEl.innerHTML='<div style="color:var(--mut);font-size:.76rem;padding:10px;line-height:1.7">'
+        +'Feature importance will appear after the first model retrain.<br>'
+        +'Needs <strong style="color:var(--txt)">50 labeled trades</strong> minimum. '
+        +'The AI will then show which indicators (RSI, MACD, EMA gap, volume ratio, ATR…) '
+        +'are the strongest predictors of winning trades for this market.</div>';
+    }
+  }
+
+  // ── Recent labeled trades timeline ────────────────────────────────────────
+  var tlEl=document.getElementById('lnTimeline');
+  var tl=ins.labels_timeline||[];
+  if(tlEl){
+    if(tl.length){
+      tlEl.style.cssText='display:flex;flex-direction:column;gap:4px;max-height:260px;overflow-y:auto;padding-right:4px';
+      tlEl.innerHTML=tl.slice().reverse().map(function(e){
+        var isWin=e.label===1;
+        var ts=e.ts?new Date(e.ts).toLocaleString():'--';
+        var pnlStr=e.pnl!=null?(e.pnl>=0?'+$'+e.pnl.toFixed(2):'-$'+Math.abs(e.pnl).toFixed(2)):'--';
+        var rrStr=e.rolling_wr!=null?e.rolling_wr.toFixed(1)+'%':'--';
+        var rrCls=e.rolling_wr!=null?(e.rolling_wr>=50?'pos':'neg'):'';
+        return '<div style="display:flex;align-items:center;gap:8px;padding:5px 8px;background:var(--bg3);border-radius:6px;border-left:3px solid '+(isWin?'var(--grn)':'var(--red)')+'">'
+          +'<span style="font-size:.64rem;color:var(--mut);min-width:64px">'+ts+'</span>'
+          +'<span style="font-weight:700;font-size:.79rem;min-width:88px">'+e.symbol+'</span>'
+          +'<span class="'+(isWin?'pos':'neg')+'" style="font-size:.75rem;font-weight:700;min-width:40px">'+(isWin?'WIN':'LOSS')+'</span>'
+          +'<span class="'+(e.pnl>=0?'pos':'neg')+'" style="font-size:.75rem;min-width:68px">'+pnlStr+'</span>'
+          +'<span style="font-size:.67rem;color:var(--mut)">Rolling WR: <span class="'+rrCls+'">'+rrStr+'</span></span>'
+          +'<span style="font-size:.64rem;color:var(--mut);margin-left:auto">#'+e.seq+'</span>'
+          +'</div>';
+      }).join('');
+    }else{
+      tlEl.innerHTML='<div style="color:var(--mut);font-size:.76rem;padding:10px;line-height:1.6">'
+        +'No labeled trades yet. Trades are labeled when they close (win or loss).<br>'
+        +'The AI accumulates 50 labeled trades then retrains its XGBoost model automatically.</div>';
+    }
+  }
 }
 
 function bLC(coins){

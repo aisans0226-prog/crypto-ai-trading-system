@@ -369,11 +369,109 @@ async def get_learning_stats():
     if not state.self_learner:
         return {"stats": {}, "top_coins": []}
     stats = state.self_learner.get_stats()
-    top_coins = state.self_learner.get_top_coins(10)
-    return {
-        "stats": stats,
-        "top_coins": [{"symbol": s, "win_rate": round(w * 100, 1)} for s, w in top_coins],
+    top_coins_raw = state.self_learner.get_top_coins(10)
+    coin_stats_dict = state.self_learner._coin_stats
+    top_coins = []
+    for sym, wr in top_coins_raw:
+        cs = coin_stats_dict.get(sym, {})
+        top_coins.append({
+            "symbol":   sym,
+            "win_rate": round(wr * 100, 1),
+            "wins":     cs.get("wins", 0),
+            "losses":   cs.get("losses", 0),
+            "total":    cs.get("total", 0),
+        })
+    return {"stats": stats, "top_coins": top_coins}
+
+
+@app.get("/api/learning-insights")
+async def get_learning_insights():
+    """Deep learning insights: funnel, research quality, rolling win rate, feature importance."""
+    result: dict = {
+        "labels_timeline":    [],
+        "rolling_wr_chart":   [],
+        "funnel":             {"scanned": 0, "researched": 0, "executed": 0, "wins": 0, "losses": 0},
+        "research_buckets":   [],
+        "feature_importance": [],
     }
+
+    if state.self_learner:
+        result["labels_timeline"]    = state.self_learner.get_labels_timeline(50)
+        result["feature_importance"] = state.self_learner.get_feature_importance(10)
+        # Build rolling win-rate series for the learning curve chart
+        tl = state.self_learner._labels_timeline
+        chart_pts = []
+        for i in range(len(tl)):
+            window = [x["label"] for x in tl[max(0, i - 9): i + 1]]
+            chart_pts.append({
+                "idx": i + 1,
+                "ts":  tl[i]["ts"],
+                "wr":  round(sum(window) / len(window) * 100, 1),
+                "sym": tl[i]["symbol"],
+            })
+        result["rolling_wr_chart"] = chart_pts[-50:]  # last 50 data points
+
+    if state.coin_database:
+        # Signal→trade funnel (aggregate over all coins)
+        try:
+            from sqlalchemy import func, select
+            from data_engine.coin_database import CoinStats
+            async with state.coin_database._sf() as session:
+                agg = await session.execute(
+                    select(
+                        func.sum(CoinStats.total_signals).label("scanned"),
+                        func.sum(CoinStats.times_researched).label("researched"),
+                        func.sum(CoinStats.times_executed).label("executed"),
+                        func.sum(CoinStats.wins).label("wins"),
+                        func.sum(CoinStats.losses).label("losses"),
+                    )
+                )
+                row = agg.fetchone()
+                if row:
+                    result["funnel"] = {
+                        "scanned":    int(row.scanned   or 0),
+                        "researched": int(row.researched or 0),
+                        "executed":   int(row.executed   or 0),
+                        "wins":       int(row.wins        or 0),
+                        "losses":     int(row.losses      or 0),
+                    }
+        except Exception as exc:
+            logger.warning("learning-insights funnel query failed: {}", exc)
+
+        # Research score vs actual outcome — bucketed into 5 ranges
+        try:
+            from sqlalchemy import select
+            from data_engine.coin_database import ResearchLog
+            async with state.coin_database._sf() as session:
+                res = await session.execute(
+                    select(ResearchLog)
+                    .where(ResearchLog.outcome_pnl.isnot(None))
+                    .order_by(ResearchLog.id.desc())
+                    .limit(200)
+                )
+                rl_rows = res.scalars().all()
+            buckets = {k: {"wins": 0, "total": 0} for k in ("0–2", "2–4", "4–6", "6–8", "8–10")}
+            bracket_map = [(0, 2, "0–2"), (2, 4, "2–4"), (4, 6, "4–6"), (6, 8, "6–8"), (8, 10.01, "8–10")]
+            for r in rl_rows:
+                for lo, hi, lbl in bracket_map:
+                    if lo <= r.research_score < hi:
+                        buckets[lbl]["total"] += 1
+                        if r.outcome_pnl > 0:
+                            buckets[lbl]["wins"] += 1
+                        break
+            result["research_buckets"] = [
+                {
+                    "range":    k,
+                    "total":    v["total"],
+                    "wins":     v["wins"],
+                    "win_rate": round(v["wins"] / v["total"] * 100, 1) if v["total"] > 0 else 0.0,
+                }
+                for k, v in buckets.items()
+            ]
+        except Exception as exc:
+            logger.warning("learning-insights research buckets failed: {}", exc)
+
+    return result
 
 
 @app.get("/api/update/status")

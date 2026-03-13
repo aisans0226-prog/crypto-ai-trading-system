@@ -54,6 +54,12 @@ class SelfLearningEngine:
         self._samples_y: List[int] = []
         self._coin_stats: Dict[str, dict] = {}    # symbol → {wins, losses, total, win_rate}
         self._new_since_retrain: int = 0
+        # Retrain tracking
+        self._retrain_count: int = 0
+        self._last_retrain_ts: Optional[str] = None
+        self._model_trained: bool = False
+        # Timeline of last 100 labeled trades — used for learning curve chart
+        self._labels_timeline: List[dict] = []
         # Load legacy files so the engine works even before initialize() is called
         self._load_legacy_files()
 
@@ -157,6 +163,16 @@ class SelfLearningEngine:
             stat["losses"] += 1
         stat["win_rate"] = stat["wins"] / stat["total"]
 
+        # Record in timeline for learning curve
+        self._labels_timeline.append({
+            "ts":     datetime.utcnow().isoformat(),
+            "symbol": sym,
+            "pnl":    round(pnl, 2),
+            "label":  label,
+        })
+        if len(self._labels_timeline) > 100:
+            self._labels_timeline = self._labels_timeline[-100:]
+
         logger.info("Trade labelled: {} pnl={:.2f} label={}", sym, pnl, label)
 
         # Async background: update DB label
@@ -198,6 +214,9 @@ class SelfLearningEngine:
             with open(MODEL_DIR / "xgb_model.pkl", "wb") as f:
                 pickle.dump(model, f)
             self._new_since_retrain = 0
+            self._retrain_count += 1
+            self._last_retrain_ts = datetime.utcnow().isoformat()
+            self._model_trained = True
             logger.info("Model retrained on {} samples — win-rate: {:.1f}%",
                         len(y), sum(y) / len(y) * 100)
         except Exception as exc:
@@ -217,14 +236,78 @@ class SelfLearningEngine:
     def get_stats(self) -> dict:
         total = len(self._samples_y)
         wins  = sum(self._samples_y) if self._samples_y else 0
+        overall_wr = round(wins / total * 100, 2) if total else 0
+
+        # Recent win rates (last 10 / 20 samples)
+        last10 = self._samples_y[-10:] if len(self._samples_y) >= 5 else []
+        last20 = self._samples_y[-20:] if len(self._samples_y) >= 10 else []
+        wr10 = round(sum(last10) / len(last10) * 100, 1) if last10 else None
+        wr20 = round(sum(last20) / len(last20) * 100, 1) if last20 else None
+
+        # Learning trend: compare recent vs overall
+        if wr10 is not None and wr20 is not None:
+            if wr10 > wr20 + 5:        trend = "improving"
+            elif wr10 < wr20 - 5:     trend = "declining"
+            else:                      trend = "stable"
+        else:
+            trend = "insufficient_data"
+
         return {
-            "total_samples":     total,
-            "wins":              wins,
-            "losses":            total - wins,
-            "overall_win_rate":  round(wins / total * 100, 2) if total else 0,
-            "pending_labels":    len(self._pending),
-            "coins_tracked":     len(self._coin_stats),
-            "new_since_retrain": self._new_since_retrain,
-            "next_retrain_at":   RETRAIN_EVERY - self._new_since_retrain,
-            "db_connected":      self._db is not None,
+            "total_samples":              total,
+            "wins":                       wins,
+            "losses":                     total - wins,
+            "overall_win_rate":           overall_wr,
+            "win_rate_last_10":           wr10,
+            "win_rate_last_20":           wr20,
+            "learning_trend":             trend,
+            "pending_labels":             len(self._pending),
+            "coins_tracked":              len(self._coin_stats),
+            "new_since_retrain":          self._new_since_retrain,
+            "next_retrain_at":            RETRAIN_EVERY - self._new_since_retrain,
+            "retrain_threshold":          RETRAIN_EVERY,
+            "db_connected":               self._db is not None,
+            "model_trained":              self._model_trained,
+            "retrain_count":              self._retrain_count,
+            "last_retrain_ts":            self._last_retrain_ts,
+            "samples_needed_for_first":   max(0, 30 - total),
         }
+
+    def get_labels_timeline(self, n: int = 50) -> List[dict]:
+        """Return last N labeled trades with per-entry rolling 10-trade win rate."""
+        entries = self._labels_timeline[-n:]
+        result = []
+        for i, e in enumerate(entries):
+            window = [x["label"] for x in entries[max(0, i - 9): i + 1]]
+            rolling_wr = round(sum(window) / len(window) * 100, 1) if window else 50.0
+            seq = max(0, len(self._labels_timeline) - n) + i
+            result.append({**e, "rolling_wr": rolling_wr, "seq": seq + 1})
+        return result
+
+    def get_feature_importance(self, top_n: int = 10) -> List[dict]:
+        """Return top-N feature importances from the saved XGBoost model (if trained)."""
+        if not XGB_AVAILABLE or not self._model_trained:
+            return []
+        try:
+            model_path = MODEL_DIR / "xgb_model.pkl"
+            if not model_path.exists():
+                return []
+            import pickle as _pkl
+            with open(model_path, "rb") as fh:
+                model = _pkl.load(fh)
+            importances = model.feature_importances_
+            # Recover feature names: prefer model's stored names, else build from dummy df
+            if hasattr(model, "feature_names_in_") and model.feature_names_in_ is not None:
+                names = list(model.feature_names_in_)
+            else:
+                from ml_models.prediction_model import build_features as _bf
+                dummy = pd.DataFrame({
+                    "close":  np.ones(60), "high": np.ones(60),
+                    "low":    np.ones(60), "volume": np.ones(60),
+                })
+                names = list(_bf(dummy).columns)
+            pairs = sorted(zip(names, importances), key=lambda x: x[1], reverse=True)[:top_n]
+            return [{"feature": n, "importance": round(float(v), 4)} for n, v in pairs]
+        except Exception as exc:
+            logger.debug("get_feature_importance error: {}", exc)
+            return []
+
