@@ -188,6 +188,18 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
   #ct{padding:10px 10px 76px}
   .sv{font-size:1.2rem}
 }
+/* Price flash animations for real-time updates */
+@keyframes priceUp{0%{background:rgba(16,185,129,.35);color:#10b981}100%{background:transparent}}
+@keyframes priceDn{0%{background:rgba(255,68,102,.35);color:#ff4466}100%{background:transparent}}
+.flash-up{animation:priceUp 1.4s ease}
+.flash-dn{animation:priceDn 1.4s ease}
+/* Live price badge */
+.live-dot{display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--grn);animation:pulse 1.5s infinite;margin-right:3px;vertical-align:middle}
+/* Liquidation price cell */
+.liq-warn{color:#f59e0b;font-weight:600}
+.liq-safe{color:var(--mut)}
+/* RR badge */
+.rr-good{color:var(--grn)}.rr-bad{color:var(--red)}.rr-ok{color:var(--mut)}
 </style>
 </head>
 <body>
@@ -279,6 +291,7 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
     <div class="sc"><div class="sl">Max Drawdown</div><div class="sv neg" id="s5">--%</div><div class="svc neu">Peak to trough</div></div>
     <div class="sc"><div class="sl">Total PnL</div><div class="sv" id="s6">$--</div><div class="svc neu">All closed trades</div></div>
     <div class="sc"><div class="sl">Daily Trades</div><div class="sv" id="s7">--</div><div class="svc neu" id="s7-sub">Max -- today</div></div>
+    <div class="sc"><div class="sl">Unrealized PnL</div><div class="sv" id="s8">$--</div><div class="svc neu">Open positions <span class="live-dot"></span></div></div>
   </div>
   <!-- Bot Status Panel -->
   <div class="bsp" id="bst-panel">
@@ -404,19 +417,19 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
 
   <div class="card fw">
     <div class="ch">
-      <span class="ct2">Open Positions</span>
+      <span class="ct2">Open Positions <span id="pos-live-ts" style="font-size:.65rem;color:var(--grn);font-weight:400;margin-left:6px"></span></span>
       <span id="expb" class="sbg" style="font-size:.7rem">Exposure: --</span>
     </div>
     <!-- Desktop table -->
     <div id="mob-hide-tbl" style="overflow-x:auto">
       <table class="tbl">
         <thead><tr>
-          <th>Symbol</th><th>Dir</th><th>Entry</th><th>Current</th><th>Unreal. PnL</th>
+          <th>Symbol</th><th>Dir</th><th>Lev</th><th>Entry</th><th>Current <span class="live-dot"></span></th><th>Unreal. PnL / ROE%</th>
           <th>SL</th><th>SL Dist%</th><th>TP</th><th>TP Dist%</th>
-          <th>Time Open</th><th>Size (USDT)</th><th>Score</th><th>Exchange</th>
+          <th>Liq Est.</th><th>R:R Live</th><th>Time Open</th><th>Size (USDT)</th><th>Score</th><th>Exchange</th>
         </tr></thead>
         <tbody id="ttb">
-          <tr><td colspan="13" style="text-align:center;color:var(--mut);padding:18px">No open positions</td></tr>
+          <tr><td colspan="16" style="text-align:center;color:var(--mut);padding:18px">No open positions</td></tr>
         </tbody>
       </table>
     </div>
@@ -748,6 +761,8 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
 <script>
 var pC=null,wC=null,rkC=null,lC=null,cpC=null,prC=null,mpC=null,wdC=null;
 var aS=[],aR=[],_rawHistData=[];
+var _prices={};         // live prices from WS tickers event { SYMBOL: price }
+var _posPrevPrices={};  // previous prices for flash direction in Open Positions
 
 async function ap(p,m,b){
   var o={method:m||'GET',headers:{'Content-Type':'application/json'}};
@@ -821,7 +836,19 @@ function cwS(){
     if(d.type==='metrics'){uSt(d.data);bPC(d.data);bWL(d.data);}
     if(d.type==='positions'){
       var pg=document.querySelector('.page.active');
-      if(pg&&pg.id==='page-trades')rPos(d.data.positions||{},d.data.exposure||null);
+      if(pg&&pg.id==='page-trades')rPos(d.data.positions||{},d.data.exposure||null,true);
+      // Update live timestamp indicator
+      var tsEl=document.getElementById('pos-live-ts');
+      if(tsEl)tsEl.textContent='⊕ '+new Date().toLocaleTimeString();
+    }
+    if(d.type==='tickers'){
+      // Update live price map and refresh visible pages that use prices
+      Object.assign(_prices, d.data.prices||{});
+      var pg2=document.querySelector('.page.active');
+      if(pg2){
+        if(pg2.id==='page-signals')rSig();
+        if(pg2.id==='page-heatmap'){var hm2=document.getElementById('hm');if(hm2)_rHMTiles();}
+      }
     }
     if(d.type==='pending_orders') rPending(d.data.orders||[]);
     if(d.type==='system_update')toast(d.data.message||'Updated',d.data.success?'ok':'err');
@@ -842,9 +869,16 @@ function lgC(msg){
 
 async function lD(){
   var a=await Promise.all([ap('/api/portfolio'),ap('/api/metrics'),ap('/api/signals'),ap('/api/ai-rankings')]);
-  uSt(Object.assign({},a[1],a[0]));
+  var portf=a[0],met=a[1];
+  // Compute total unrealized PnL from enriched positions (available at REST load time)
+  var pos=portf.positions||{};
+  var tupnl=Object.values(pos).reduce(function(s,p){return s+(p.unrealized_pnl_usdt||0);},0);
+  met.total_unrealized_pnl=Math.round(tupnl*100)/100;
+  // Seed _prices from portfolio positions so heatmap/signals can use them immediately
+  Object.values(pos).forEach(function(p){if(p.symbol&&p.current_price)_prices[p.symbol]=p.current_price;});
+  uSt(Object.assign({},met,portf));
   aS=a[2].signals||[];aR=a[3].rankings||[];
-  dSig();dRnk();bPC(a[1]);bWL(a[1]);
+  dSig();dRnk();bPC(met);bWL(met);
   lBotStatus();
 }
 
@@ -869,6 +903,9 @@ function uSt(d){
   var maxDt=d.max_daily_trades||3;
   fe('s7',dt,'');
   var s7sub=document.getElementById('s7-sub');if(s7sub)s7sub.textContent='Max '+maxDt+' today';
+  // s8 — total unrealized PnL
+  var upnl=d.total_unrealized_pnl||0;
+  fe('s8',(upnl>=0?'+':'')+'$'+fm(Math.abs(upnl)),(upnl>=0?'pos':'neg'));
 }
 
 async function lBotStatus(){
@@ -899,7 +936,16 @@ function sHTML(s,showT){
   var tags=(s.signals||[]).map(function(t){return '<span class="tag">'+t+'</span>';}).join('');
   var ai=s.ai_prediction?'<span style="font-size:.62rem;color:var(--accent);margin-left:5px">AI:'+Math.round(s.ai_prediction*100)+'%</span>':'';
   var tm=showT&&s.ts?'<span class="stm">'+new Date(s.ts).toLocaleTimeString()+'</span>':'';
-  return '<div class="si"><div class="ss '+scc+'">'+sc+'</div><div class="sb2"><div><span class="ssym">'+s.symbol+'</span><span class="sdir s'+dc+'">'+s.direction+'</span>'+ai+'</div><div class="stags">'+tags+'</div></div>'+tm+'</div>';
+  // Live price from WS tickers map
+  var lp=s.symbol?_prices[s.symbol]:null;
+  var lpTag=lp?'<span style="font-size:.61rem;background:rgba(0,212,170,.1);color:var(--accent);padding:1px 5px;border-radius:4px;margin-left:4px"><span class="live-dot"></span>$'+Number(lp).toFixed(4)+'</span>':'';
+  // % change from signal detection price to current live price
+  var chgTag='';
+  if(lp&&s.price&&s.price>0){
+    var chgPct=(lp-s.price)/s.price*100;
+    chgTag='<span style="font-size:.6rem;margin-left:3px" class="'+(chgPct>=0?'pos':'neg')+'">'+(chgPct>=0?'+':'')+chgPct.toFixed(2)+'%</span>';
+  }
+  return '<div class="si"><div class="ss '+scc+'">'+sc+'</div><div class="sb2"><div><span class="ssym">'+s.symbol+'</span><span class="sdir s'+dc+'">'+s.direction+'</span>'+ai+lpTag+chgTag+'</div><div class="stags">'+tags+'</div></div>'+tm+'</div>';
 }
 
 function dSig(){
@@ -954,13 +1000,30 @@ function rSig(){
 
 async function lHM(){
   var d=await ap('/api/heatmap');var coins=(d.coins||[]).slice(0,60);
+  // Seed _prices with heatmap signal prices first, then WS will push live values
+  coins.forEach(function(c){if(c.symbol&&!_prices[c.symbol]&&c.price_change_pct!=null){}})
+  _hmCoins=coins;
+  _rHMTiles();
+}
+
+var _hmCoins=[];
+function _rHMTiles(){
+  var coins=_hmCoins;
   var el=document.getElementById('hm');if(!el)return;
   el.innerHTML=coins.map(function(c){
     var pct=parseFloat(c.price_change_pct||0),ab=Math.min(Math.abs(pct)/10,1),bg,tc;
     if(pct>0){bg='rgba(16,185,129,'+(0.15+ab*0.45)+')';tc='#10b981';}
     else if(pct<0){bg='rgba(255,68,102,'+(0.15+ab*0.45)+')';tc='#ff4466';}
     else{bg='rgba(251,191,36,.15)';tc='#fbbf24';}
-    return '<div class="hmc" style="background:'+bg+'" title="'+c.symbol+': '+pct.toFixed(2)+'%"><div class="hms">'+c.symbol.replace('USDT','')+'</div><div class="hmp" style="color:'+tc+'">'+(pct>=0?'+':'')+pct.toFixed(1)+'%</div>'+(c.score?'<div class="hmsc">'+c.score+'pts</div>':'')+'</div>';
+    // Live price from WS tickers
+    var lp=c.symbol?_prices[c.symbol]:null;
+    var lpStr=lp?'<div style="font-size:.6rem;color:rgba(255,255,255,.7);margin-top:1px">$'+Number(lp).toFixed(4)+'</div>':'';
+    return '<div class="hmc" style="background:'+bg+'" title="'+c.symbol+': '+pct.toFixed(2)+'%">'
+      +'<div class="hms">'+c.symbol.replace('USDT','')+'</div>'
+      +'<div class="hmp" style="color:'+tc+'">'+(pct>=0?'+':'')+pct.toFixed(1)+'%</div>'
+      +(c.score?'<div class="hmsc">'+c.score+'pts</div>':'')
+      +lpStr
+      +'</div>';
   }).join('');
 }
 
@@ -1012,7 +1075,7 @@ function fmtDur(secs){
   return h>0?h+'h '+m+'m':m+'m '+Math.floor(secs%60)+'s';
 }
 
-function rPos(pos, exp) {
+function rPos(pos, exp, animate) {
   var tb=document.getElementById('ttb');
   var mct=document.getElementById('mob-tc');
   var bdg=document.getElementById('expb');
@@ -1024,37 +1087,46 @@ function rPos(pos, exp) {
     mct.innerHTML=ents.length?ents.map(function(e){
       var s=e[0],p=e[1];
       var dir=(p.direction||'LONG').toLowerCase();
-      var cp=p.current_price!=null?'$'+Number(p.current_price).toFixed(4):'--';
+      var cpv=p.current_price;
+      var cp=cpv!=null?'$'+Number(cpv).toFixed(4):'--';
       var upnl=p.unrealized_pnl_usdt,upct=p.unrealized_pnl_pct;
-      var pnlStr=upnl!=null?(upnl>=0?'+$':'-$')+Math.abs(upnl).toFixed(2)+' ('+(upct>=0?'+':'')+upct.toFixed(1)+'%)':'--';
+      var roe=p.unrealized_pnl_pct;
+      var pnlStr=upnl!=null?(upnl>=0?'+$':'-$')+Math.abs(upnl).toFixed(2)+' ('+(roe>=0?'+':'')+roe.toFixed(1)+'% ROE)':'--';
       var pnlCls=upnl!=null?(upnl>=0?'pos':'neg'):'';
       var bdr=upnl!=null?(upnl>=0?'1px solid rgba(16,185,129,.35)':'1px solid rgba(255,68,102,.25)'):'1px solid var(--border)';
-      // SL/TP distances
-      var cpv=p.current_price;
       var slDist=cpv&&p.stop_loss?Math.abs((cpv-p.stop_loss)/cpv*100).toFixed(2)+'%':'--';
       var tpDist=cpv&&p.take_profit?Math.abs((p.take_profit-cpv)/cpv*100).toFixed(2)+'%':'--';
       var timeOpen=p.opened_at?fmtDur((Date.now()/1000-p.opened_at)):'--';
+      var lev=p.leverage||1;
+      var liqP=p.liq_price;
+      var liqStr=liqP?'$'+Number(liqP).toFixed(4):'--';
+      // Warn if current price is within 20% of liq
+      var liqWarn=liqP&&cpv&&Math.abs(cpv-liqP)/cpv<0.2;
+      var rr=p.rr_live;
+      var rrStr=rr!=null&&rr>0?rr.toFixed(2)+':1':'--';
       return '<div class="mtc" style="border:'+bdr+'">'
         +'<div class="mtc-top">'
           +'<div style="display:flex;align-items:center;gap:8px">'
             +'<span class="mtc-sym">'+s.replace('USDT','')+'<span style="font-size:.72rem;color:var(--mut);font-weight:400">/USDT</span></span>'
             +'<span class="sdir s'+dir+'">'+p.direction+'</span>'
+            +'<span style="font-size:.65rem;background:rgba(59,130,246,.15);color:var(--a2);padding:1px 5px;border-radius:4px">'+lev+'x</span>'
           +'</div>'
           +'<span class="mtc-pnl '+pnlCls+'">'+pnlStr+'</span>'
         +'</div>'
         +'<div class="mtc-g">'
           +'<div class="mtc-c"><span class="mtc-l">Entry</span><span class="mtc-v">$'+(p.entry_price||0).toFixed(4)+'</span></div>'
-          +'<div class="mtc-c"><span class="mtc-l">Current</span><span class="mtc-v" style="color:var(--accent)">'+cp+'</span></div>'
+          +'<div class="mtc-c"><span class="mtc-l">Current <span class="live-dot"></span></span><span class="mtc-v" style="color:var(--accent)">'+cp+'</span></div>'
           +'<div class="mtc-c"><span class="mtc-l">Open</span><span class="mtc-v" style="color:var(--mut)">'+timeOpen+'</span></div>'
         +'</div>'
         +'<div class="mtc-g" style="margin-top:5px">'
           +'<div class="mtc-c"><span class="mtc-l">SL</span><span class="mtc-v neg">$'+(p.stop_loss||0).toFixed(4)+'<br><span style="font-size:.63rem">▼'+slDist+'</span></span></div>'
           +'<div class="mtc-c"><span class="mtc-l">TP</span><span class="mtc-v pos">$'+(p.take_profit||0).toFixed(4)+'<br><span style="font-size:.63rem">▲'+tpDist+'</span></span></div>'
-          +'<div class="mtc-c"><span class="mtc-l">Score</span><span class="mtc-v" style="color:var(--yel)">'+(p.signal_score||'--')+'</span></div>'
+          +'<div class="mtc-c"><span class="mtc-l">R:R Live</span><span class="mtc-v" style="color:'+(rr>=1.5?'var(--grn)':rr>0?'var(--yel)':'var(--red)')+'">'+rrStr+'</span></div>'
         +'</div>'
-        +'<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);display:flex;justify-content:space-between;font-size:.68rem;color:var(--mut)">'
-          +'<span>Size: $'+(p.position_size_usdt||0).toFixed(0)+'</span>'
-          +'<span>'+( p.exchange||'--')+'</span>'
+        +'<div style="margin-top:7px;padding-top:7px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;font-size:.68rem">'
+          +'<span style="color:var(--mut)">Size: $'+(p.position_size_usdt||0).toFixed(0)+'</span>'
+          +'<span style="color:'+(liqWarn?'var(--yel)':'var(--mut)')+'">Liq: '+liqStr+'</span>'
+          +'<span style="color:var(--mut)">'+( p.exchange||'--')+'</span>'
         +'</div>'
       +'</div>';
     }).join(''):'<div style="color:var(--mut);padding:28px;text-align:center;font-size:.82rem">No open positions</div>';
@@ -1066,29 +1138,48 @@ function rPos(pos, exp) {
   tb.innerHTML=ents.length?ents.map(function(e){
     var s=e[0],p=e[1];
     var dir=(p.direction||'LONG').toLowerCase();
-    var cp=p.current_price!=null?'$'+Number(p.current_price).toFixed(4):'--';
+    var cpv=p.current_price;
+    var lev=p.leverage||1;
+    // Flash animation: compare with previous known price
+    var prev=_posPrevPrices[s];
+    var flashCls='';
+    if(animate&&cpv!=null&&prev!=null&&cpv!==prev){
+      flashCls=cpv>prev?' flash-up':' flash-dn';
+    }
+    if(cpv!=null)_posPrevPrices[s]=cpv;
+    var cpDisp=cpv!=null?'$'+Number(cpv).toFixed(4):'--';
     var upnl=p.unrealized_pnl_usdt,upct=p.unrealized_pnl_pct;
-    var pnlStr=upnl!=null?(upnl>=0?'+$':'-$')+Math.abs(upnl).toFixed(2)+' ('+(upct>=0?'+':'')+upct.toFixed(1)+'%)':'--';
+    var pnlStr=upnl!=null?(upnl>=0?'+$':'-$')+Math.abs(upnl).toFixed(2):'--';
+    var roeStr=upct!=null?'<br><span style="font-size:.67rem;opacity:.85">'+(upct>=0?'+':'')+upct.toFixed(2)+'% ROE</span>':'';
     var pnlCls=upnl!=null?(upnl>=0?'tp':'tn'):'';
     // SL/TP distances from current price
-    var cpv=p.current_price;
     var slDist=cpv&&p.stop_loss?'<span style="font-size:.66rem;color:var(--red)">▼'+Math.abs((cpv-p.stop_loss)/cpv*100).toFixed(2)+'%</span>':'--';
     var tpDist=cpv&&p.take_profit?'<span style="font-size:.66rem;color:var(--grn)">▲'+Math.abs((p.take_profit-cpv)/cpv*100).toFixed(2)+'%</span>':'--';
     var timeOpen=p.opened_at?fmtDur((Date.now()/1000-p.opened_at)):'--';
+    // Liquidation price
+    var liqP=p.liq_price;
+    var liqWarn=liqP&&cpv&&Math.abs(cpv-liqP)/cpv<0.2;
+    var liqDisp=liqP?'<span class="'+(liqWarn?'liq-warn':'liq-safe')+'">$'+Number(liqP).toFixed(4)+'</span>':'--';
+    // Live R:R
+    var rr=p.rr_live;
+    var rrDisp=rr!=null&&rr>0?'<span class="'+(rr>=2?'rr-good':rr>=1?'rr-ok':'rr-bad')+'">'+rr.toFixed(2)+':1</span>':'<span class="rr-bad">--</span>';
     return '<tr><td class="tbls">'+s+'</td>'
       +'<td><span class="sdir s'+dir+'">'+p.direction+'</span></td>'
+      +'<td style="color:var(--a2);font-weight:600">'+lev+'x</td>'
       +'<td>'+(p.entry_price||0).toFixed(4)+'</td>'
-      +'<td style="font-weight:600">'+cp+'</td>'
-      +'<td class="'+pnlCls+'" style="font-weight:700">'+pnlStr+'</td>'
+      +'<td style="font-weight:700" class="'+flashCls.trim()+'"><span class="live-dot"></span>'+cpDisp+'</td>'
+      +'<td class="'+pnlCls+'" style="font-weight:700">'+pnlStr+roeStr+'</td>'
       +'<td class="tn">'+(p.stop_loss||0).toFixed(4)+'</td>'
       +'<td>'+slDist+'</td>'
       +'<td class="tp">'+(p.take_profit||0).toFixed(4)+'</td>'
       +'<td>'+tpDist+'</td>'
+      +'<td>'+liqDisp+'</td>'
+      +'<td>'+rrDisp+'</td>'
       +'<td style="color:var(--mut);font-size:.75rem">'+timeOpen+'</td>'
       +'<td>$'+(p.position_size_usdt||0).toFixed(2)+'</td>'
       +'<td>'+(p.signal_score||'--')+'</td>'
       +'<td>'+(p.exchange||'--')+'</td></tr>';
-  }).join(''):'<tr><td colspan="13" style="text-align:center;color:var(--mut);padding:18px">No open positions</td></tr>';
+  }).join(''):'<tr><td colspan="16" style="text-align:center;color:var(--mut);padding:18px">No open positions</td></tr>';
 }
 
 function rPending(orders){
