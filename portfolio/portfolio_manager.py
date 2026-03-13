@@ -40,6 +40,8 @@ class TradeRecord(Base):
     exchange = Column(String(10), default="binance")
     order_id = Column(String(50), nullable=True)
     signal_score = Column(Integer, default=0)
+    strategy_name = Column(String(50), nullable=True)       # which strategy triggered
+    signal_confidence = Column(Float, nullable=True)        # ML ensemble probability (0–1)
     opened_at = Column(DateTime, default=datetime.utcnow)
     closed_at = Column(DateTime, nullable=True)
 
@@ -201,6 +203,11 @@ class PortfolioManager:
         if self._redis:
             await self._redis.set("portfolio:balance", self._balance)
         logger.info("Position closed: {} PnL={:.2f} | balance={:.2f}", symbol, pnl, self._balance)
+        # Persist daily performance snapshot so /api/performance-history has fresh data
+        try:
+            await self.save_performance_snapshot()
+        except Exception as exc:
+            logger.debug("save_performance_snapshot error (non-fatal): {}", exc)
 
     async def get_closed_trades_pnl(self, trade_ids: List[int]) -> Dict[int, float]:
         """Batch-fetch pnl_usdt for a list of closed trade DB ids.
@@ -295,6 +302,77 @@ class PortfolioManager:
             "balance": self._balance,
             "pnl_trend": pnl_trend,
         }
+
+    async def save_performance_snapshot(self) -> None:
+        """Persist today's performance to performance_snapshots (one row per UTC day).
+        Called after every trade closes so the table has a full daily history."""
+        m = await self.calculate_metrics()
+        today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        from sqlalchemy import select
+        async with self._session_factory() as session:
+            # Upsert — update today's row if it exists, otherwise insert
+            result = await session.execute(
+                select(PerformanceSnapshot).where(
+                    PerformanceSnapshot.snapshot_date == today
+                )
+            )
+            row = result.scalar_one_or_none()
+            total = m.get("wins_count", 0) + m.get("losses_count", 0)
+            pf = m.get("profit_factor", 0.0)
+            if row:
+                from sqlalchemy import update as _upd
+                await session.execute(
+                    _upd(PerformanceSnapshot)
+                    .where(PerformanceSnapshot.snapshot_date == today)
+                    .values(
+                        balance=m.get("balance", 0.0),
+                        daily_pnl=m.get("daily_pnl", 0.0),
+                        total_trades=total,
+                        winning_trades=m.get("wins_count", 0),
+                        losing_trades=m.get("losses_count", 0),
+                        win_rate=m.get("win_rate", 0.0),
+                        profit_factor=pf,
+                        max_drawdown=m.get("max_drawdown_pct", 0.0),
+                    )
+                )
+            else:
+                session.add(PerformanceSnapshot(
+                    snapshot_date=today,
+                    balance=m.get("balance", 0.0),
+                    daily_pnl=m.get("daily_pnl", 0.0),
+                    total_trades=total,
+                    winning_trades=m.get("wins_count", 0),
+                    losing_trades=m.get("losses_count", 0),
+                    win_rate=m.get("win_rate", 0.0),
+                    profit_factor=pf,
+                    max_drawdown=m.get("max_drawdown_pct", 0.0),
+                ))
+            await session.commit()
+
+    async def get_performance_history(self, days: int = 90) -> list:
+        """Return daily performance snapshots sorted oldest-first (for charts)."""
+        from sqlalchemy import select
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(PerformanceSnapshot)
+                .order_by(PerformanceSnapshot.snapshot_date.desc())
+                .limit(days)
+            )
+            rows = result.scalars().all()
+        return [
+            {
+                "date":           r.snapshot_date.strftime("%Y-%m-%d"),
+                "balance":        round(r.balance, 2),
+                "daily_pnl":      round(r.daily_pnl, 2),
+                "total_trades":   r.total_trades,
+                "winning_trades": r.winning_trades,
+                "losing_trades":  r.losing_trades,
+                "win_rate":       round(r.win_rate, 2),
+                "profit_factor":  round(r.profit_factor, 2),
+                "max_drawdown":   round(r.max_drawdown, 2),
+            }
+            for r in reversed(rows)
+        ]
 
     async def get_risk_exposure(self) -> dict:
         positions = await self.get_open_positions()

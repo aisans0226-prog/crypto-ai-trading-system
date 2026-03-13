@@ -535,6 +535,17 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
       <div class="cwm"><canvas id="sdc"></canvas></div>
     </div>
   </div>
+  <!-- Win Rate by Hour + Win Rate by Day -->
+  <div class="tc" style="margin-top:0">
+    <div class="card">
+      <div class="ch"><span class="ct2">Win Rate by Hour (UTC)</span><span style="font-size:.67rem;color:var(--mut);margin-left:6px">Which hours win most?</span></div>
+      <div class="cwm"><canvas id="wrhc"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="ch"><span class="ct2">Win Rate by Day of Week</span><span style="font-size:.67rem;color:var(--mut);margin-left:6px">Best days to trade</span></div>
+      <div class="cwm"><canvas id="wrwdc"></canvas></div>
+    </div>
+  </div>
 </div>
 
 <!-- SYSTEM PAGE -->
@@ -556,17 +567,10 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
       <div id="updlog" style="margin-top:9px;font-size:.72rem;color:var(--mut)"></div>
     </div>
     <div class="card">
-      <div class="ch"><span class="ct2">Bot Configuration</span></div>
-      <table class="tbl">
-        <tbody>
-          <tr><td class="neu">Risk per trade</td><td style="font-weight:600">1%</td></tr>
-          <tr><td class="neu">Max leverage</td><td style="font-weight:600">3x</td></tr>
-          <tr><td class="neu">Max open trades</td><td style="font-weight:600">5</td></tr>
-          <tr><td class="neu">Min risk-reward</td><td style="font-weight:600">1 : 2</td></tr>
-          <tr><td class="neu">Signal threshold</td><td style="font-weight:600">Score &ge; 11</td></tr>
-          <tr><td class="neu">Scan interval</td><td style="font-weight:600">60 seconds</td></tr>
-        </tbody>
-      </table>
+      <div class="ch"><span class="ct2">Bot Configuration</span><span style="font-size:.67rem;color:var(--mut)">Live from .env</span></div>
+      <div id="bcfg-body">
+        <div style="color:var(--mut);font-size:.75rem;padding:8px">Loading config...</div>
+      </div>
     </div>
   </div>
   <div class="card fw">
@@ -871,7 +875,7 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
 </div>
 
 <script>
-var pC=null,wC=null,rkC=null,lC=null,cpC=null,prC=null,mpC=null,wdC=null,lnCurveC=null,resQualC=null,hrC=null,sdC=null;
+var pC=null,wC=null,rkC=null,lC=null,cpC=null,prC=null,mpC=null,wdC=null,lnCurveC=null,resQualC=null,hrC=null,sdC=null,wrHC=null,wrWC=null;
 var aS=[],aR=[],_rawHistData=[];
 var _prices={};         // live prices from WS tickers event { SYMBOL: price }
 var _posPrevPrices={};  // previous prices for flash direction in Open Positions
@@ -1610,15 +1614,21 @@ async function lPf(){
     var aw=adv.avg_win_usdt||0;var al=adv.avg_loss_usdt||0;
     var gp=adv.gross_profit||0;var gl=adv.gross_loss||0;
     var tw=adv.total_wins||0;var tl2=adv.total_losses||0;
+    var calmar=adv.calmar_ratio||0;var sortino=adv.sortino_ratio||0;
+    var mls=adv.max_loss_streak||0;var fip=adv.fee_impact_pct||0;
     riskEl.innerHTML=[
       {l:'Expected Value',v:(ev>=0?'+':'')+'$'+ev.toFixed(2),c:ev>=0?'pos':'neg',s:'Per trade EV'},
       {l:'Sharpe Ratio',v:sh.toFixed(2),c:sh>=1?'pos':sh>=0?'neu':'neg',s:'Risk-adjusted return'},
+      {l:'Calmar Ratio',v:calmar.toFixed(2),c:calmar>=2?'pos':calmar>=1?'neu':'neg',s:'Return ÷ Max drawdown'},
+      {l:'Sortino Ratio',v:sortino.toFixed(2),c:sortino>=1.5?'pos':sortino>=0.5?'neu':'neg',s:'Return ÷ Downside risk'},
       {l:'Avg Win',v:'+$'+aw.toFixed(2),c:'pos',s:tw+' winning trades'},
       {l:'Avg Loss',v:'$'+al.toFixed(2),c:'neg',s:tl2+' losing trades'},
       {l:'Gross Profit',v:'+$'+gp.toFixed(2),c:'pos',s:'Sum of all wins'},
       {l:'Gross Loss',v:'$'+gl.toFixed(2),c:'neg',s:'Sum of all losses'},
       {l:'Win/Loss Ratio',v:al!==0?Math.abs(aw/al).toFixed(2)+':1':'--',c:'',s:'Avg win ÷ avg loss'},
       {l:'Total Wins/Losses',v:tw+' / '+tl2,c:'',s:'Closed trades'},
+      {l:'Max Loss Streak',v:mls,c:mls>=5?'neg':mls>=3?'neu':'',s:'Worst consecutive losses'},
+      {l:'Fee Impact',v:fip.toFixed(1)+'%',c:fip>30?'neg':fip>15?'neu':'pos',s:'Estimated fees vs profit'},
     ].map(function(c){
       return '<div class="rmcard"><div class="rml">'+c.l+'</div><div class="rmv '+(c.c||'')+'">'+c.v+'</div><div class="rms">'+c.s+'</div></div>';
     }).join('');
@@ -1630,6 +1640,8 @@ async function lPf(){
   bSymLst(adv.pnl_by_symbol||[]);
   bHRC(adv.pnl_by_hour||[]);
   bSDC(adv.score_distribution||[]);
+  bWRHC(adv.win_rate_by_hour||[]);
+  bWRWD(adv.win_rate_by_weekday||[]);
 }
 
 function bMPnL(data){
@@ -1735,6 +1747,45 @@ function bSDC(data){
     }});
 }
 
+var wrHC=null,wrWC=null;
+function bWRHC(data){
+  var ctx=document.getElementById('wrhc');if(!ctx)return;if(wrHC)wrHC.destroy();
+  var hasTrades=data.some(function(d){return d.count>0;});
+  if(!hasTrades){ctx.parentElement.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:140px;color:var(--mut);font-size:.76rem">Win rate by hour available after trades close</div>';return;}
+  var lbs=data.map(function(d){return d.hour+'h';});
+  var wr=data.map(function(d){return d.win_rate;});
+  var cnt=data.map(function(d){return d.count;});
+  wrHC=new Chart(ctx,{type:'bar',
+    data:{labels:lbs,datasets:[
+      {label:'Win Rate %',data:wr,backgroundColor:wr.map(function(v){return v>=60?'rgba(16,185,129,.7)':v>=50?'rgba(251,191,36,.65)':'rgba(255,68,102,.65)';}),borderRadius:3,yAxisID:'y'},
+      {label:'Trades',data:cnt,type:'line',borderColor:'rgba(59,130,246,.7)',backgroundColor:'rgba(59,130,246,.07)',pointRadius:3,fill:false,yAxisID:'y1'}
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{labels:{color:'#94a3b8',font:{size:10}},position:'bottom'},
+        tooltip:{callbacks:{label:function(ctx2){return ctx2.dataset.label+': '+(ctx2.datasetIndex===0?ctx2.parsed.y.toFixed(1)+'%':ctx2.parsed.y+' trades');}}}},
+      scales:{
+        x:{grid:{color:'rgba(255,255,255,.04)'},ticks:{color:'#64748b',font:{size:9}},title:{display:true,text:'Hour (UTC)',color:'#64748b',font:{size:9}}},
+        y:{grid:{color:'rgba(255,255,255,.04)'},ticks:{color:'#64748b'},min:0,max:100,title:{display:true,text:'Win Rate %',color:'#64748b',font:{size:9}}},
+        y1:{position:'right',grid:{drawOnChartArea:false},ticks:{color:'#64748b',font:{size:9}},title:{display:true,text:'Trades',color:'#64748b',font:{size:9}}}
+      }
+    }});
+}
+
+function bWRWD(data){
+  var ctx=document.getElementById('wrwdc');if(!ctx)return;if(wrWC)wrWC.destroy();
+  var hasTrades=data.some(function(d){return d.count>0;});
+  if(!hasTrades){ctx.parentElement.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:140px;color:var(--mut);font-size:.76rem">Win rate by weekday available after trades close</div>';return;}
+  var lbs=data.map(function(d){return d.day+' ('+d.count+')';});
+  var wr=data.map(function(d){return d.win_rate;});
+  wrWC=new Chart(ctx,{type:'bar',data:{labels:lbs,datasets:[{label:'Win Rate %',data:wr,
+    backgroundColor:wr.map(function(v){return v>=60?'rgba(16,185,129,.7)':v>=50?'rgba(251,191,36,.65)':'rgba(255,68,102,.65)';}),
+    borderRadius:4}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},
+      tooltip:{callbacks:{label:function(ctx2){return 'Win Rate: '+ctx2.parsed.y.toFixed(1)+'%';}}}},
+      scales:{x:{grid:{color:'rgba(255,255,255,.04)'},ticks:{color:'#64748b'}},
+              y:{grid:{color:'rgba(255,255,255,.04)'},ticks:{color:'#64748b'},min:0,max:100}}}});
+}
+
 function bPRC(m){
   var ctx=document.getElementById('prc');if(!ctx)return;if(prC)prC.destroy();
   var wr=Math.min(+(m.win_rate||0),100);
@@ -1753,6 +1804,40 @@ async function lSy(){
   if(d.update_available){
     var row=document.getElementById('uarow');if(row)row.style.display='flex';
     var nc=document.getElementById('ncmt');if(nc)nc.textContent=d.latest_commit||'--';
+  }
+  // Dynamic bot config
+  var cfg=await ap('/api/bot-config');
+  var bcfg=document.getElementById('bcfg-body');
+  if(bcfg&&cfg){
+    var rows=[];
+    var r=cfg.risk||{};var f=cfg.fees||{};var p=cfg.position_mgmt||{};var sg=cfg.signals||{};var mo=cfg.mode||{};
+    var yn=function(v){return v?'<span class="pos">Yes</span>':'<span class="neg">No</span>';};
+    rows.push(['Risk per trade',r.risk_per_trade_pct+'%']);
+    rows.push(['Max leverage',r.max_leverage+'x']);
+    rows.push(['Max open trades',r.max_open_trades]);
+    rows.push(['Max daily trades',r.max_daily_trades]);
+    rows.push(['Min risk-reward','1 : '+r.min_risk_reward_ratio]);
+    rows.push(['Max SL %',r.max_stop_loss_pct+'%']);
+    rows.push(['Min SL %',r.min_stop_loss_pct+'%']);
+    rows.push(['Max position size',r.max_position_size_pct+'% of free']);
+    rows.push(['Balance reserve',r.balance_reserve_pct+'%']);
+    rows.push(['Max daily loss',r.max_daily_loss_pct+'%']);
+    rows.push(['Taker fee',f.taker_fee_pct+'%']);
+    rows.push(['Max funding/8h',f.max_funding_rate_pct+'%']);
+    rows.push(['Trailing activation',p.trailing_stop_activation_pct+'%']);
+    rows.push(['Trailing distance',p.trailing_stop_distance_pct+'%']);
+    rows.push(['Breakeven trigger',p.breakeven_trigger_pct+'%']);
+    rows.push(['Max hold hours',p.max_position_hold_hours+'h']);
+    rows.push(['Signal threshold','Score ≥ '+sg.signal_score_threshold]);
+    rows.push(['Confirmations needed',sg.watchlist_confirmations]);
+    rows.push(['Min volume',('$'+(sg.min_volume_usdt/1e6).toFixed(1)+'M')]);
+    rows.push(['Dry run',yn(mo.dry_run)]);
+    rows.push(['Training mode',yn(mo.training_mode)]);
+    rows.push(['Exchange',String(mo.exchange||'--').toUpperCase()+(mo.binance_testnet?' (TESTNET)':'')]);
+    rows.push(['AI enabled',yn(mo.ai_enabled)+(mo.ai_enabled?' — '+mo.ai_provider+' / '+mo.ai_model:'')]);
+    bcfg.innerHTML='<table class="tbl"><tbody>'
+      +rows.map(function(x){return '<tr><td class="neu">'+x[0]+'</td><td style="font-weight:600">'+x[1]+'</td></tr>';}).join('')
+      +'</tbody></table>';
   }
 }
 

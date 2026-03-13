@@ -20,8 +20,15 @@ import ai_engine.llm_analyzer as llm_analyzer
 @asynccontextmanager
 async def lifespan(app_inst: "FastAPI"):
     llm_analyzer.update_cfg(_ai_cfg)
-    asyncio.create_task(_realtime_loop())
-    yield
+    _rt_task = asyncio.create_task(_realtime_loop())
+    try:
+        yield
+    finally:
+        _rt_task.cancel()
+        try:
+            await _rt_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(title="Crypto AI Dashboard", version="2.0.0", docs_url="/docs", lifespan=lifespan)
@@ -199,12 +206,15 @@ async def get_advanced_stats():
     empty = {
         "avg_duration_hours": 0.0, "best_trade_pnl": 0.0, "worst_trade_pnl": 0.0,
         "avg_pnl_per_trade": 0.0, "avg_signal_score": 0.0,
-        "current_win_streak": 0, "current_loss_streak": 0,
+        "current_win_streak": 0, "current_loss_streak": 0, "max_loss_streak": 0,
         "monthly_pnl": [], "pnl_by_weekday": [], "pnl_by_symbol": [],
         # Enhanced analytics
         "avg_win_usdt": 0.0, "avg_loss_usdt": 0.0, "expected_value": 0.0,
-        "sharpe_ratio": 0.0, "pnl_by_hour": [], "score_distribution": [],
+        "sharpe_ratio": 0.0, "calmar_ratio": 0.0, "sortino_ratio": 0.0,
+        "pnl_by_hour": [], "score_distribution": [],
         "total_wins": 0, "total_losses": 0, "gross_profit": 0.0, "gross_loss": 0.0,
+        "win_rate_by_hour": [], "win_rate_by_weekday": [],
+        "fee_impact_pct": 0.0,
     }
     if not state.portfolio_manager:
         return empty
@@ -310,6 +320,92 @@ async def get_advanced_stats():
         std = _stats.stdev(pnls) or 1e-9
         sharpe = round(mu / std * (len(pnls) ** 0.5), 3)
 
+    # --- Calmar Ratio = total PnL / max drawdown (USDT) ---
+    # Measures return quality relative to worst peak-to-trough loss
+    calmar = 0.0
+    initial_balance = settings.account_balance_usdt
+    cumulative_curve = [initial_balance + sum(pnls[:i+1]) for i in range(len(pnls))]
+    peak_eq = initial_balance
+    max_dd_usdt = 0.0
+    for val in cumulative_curve:
+        if val > peak_eq:
+            peak_eq = val
+        dd_usdt = peak_eq - val
+        max_dd_usdt = max(max_dd_usdt, dd_usdt)
+    if max_dd_usdt > 0:
+        calmar = round(sum(pnls) / max_dd_usdt, 3)
+
+    # --- Sortino Ratio = mean / downside std (penalises losses only) ---
+    sortino = 0.0
+    if len(pnls) >= 3:
+        mu = sum(pnls) / len(pnls)
+        downside = [p for p in pnls if p < 0]
+        if downside:
+            import math as _math
+            ds_std = (_math.sqrt(sum((p - 0) ** 2 for p in downside) / len(downside))) or 1e-9
+            sortino = round(mu / ds_std, 3)
+
+    # --- Max historical consecutive-loss streak ---
+    max_loss_streak = 0
+    cur_ls = 0
+    for t in trades:
+        if (t.pnl_usdt or 0) <= 0:
+            cur_ls += 1
+            max_loss_streak = max(max_loss_streak, cur_ls)
+        else:
+            cur_ls = 0
+
+    # --- Fee impact: estimated fees as % of gross profit ---
+    taker_pct = getattr(settings, "taker_fee_pct", 0.06)
+    estimated_total_fees = sum(abs(t.pnl_usdt or 0) + (
+        t.pnl_usdt or 0
+    ) for t in trades)  # placeholder; use simpler approach:
+    # round-trip taker fee × notional; notional ≈ entry × qty per trade
+    # We compute it as: 2 × taker_pct% × position_size for each trade
+    # position_size_usdt not stored, so approximate from entry × qty / leverage
+    fee_approx_total = 0.0
+    for t in trades:
+        notional = (t.entry_price or 0) * (t.quantity or 0)
+        fee_approx_total += notional * (taker_pct / 100.0) * 2
+    fee_impact_pct = round(fee_approx_total / gross_profit * 100, 1) if gross_profit > 0 else 0.0
+
+    # --- Win rate by hour of day (separate from PnL) ---
+    hr_wins: dict = defaultdict(int)
+    hr_tot: dict = defaultdict(int)
+    for t in trades:
+        if t.closed_at:
+            h = t.closed_at.hour
+            hr_tot[h] += 1
+            if (t.pnl_usdt or 0) > 0:
+                hr_wins[h] += 1
+    win_rate_by_hour = [
+        {
+            "hour":     i,
+            "win_rate": round(hr_wins.get(i, 0) / hr_tot[i] * 100, 1) if hr_tot.get(i) else 0.0,
+            "count":    hr_tot.get(i, 0),
+        }
+        for i in range(24)
+    ]
+
+    # --- Win rate by weekday ---
+    wd_wins: dict = defaultdict(int)
+    wd_tot: dict = defaultdict(int)
+    for t in trades:
+        if t.closed_at:
+            wd = t.closed_at.weekday()
+            wd_tot[wd] += 1
+            if (t.pnl_usdt or 0) > 0:
+                wd_wins[wd] += 1
+    wd_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    win_rate_by_wd = [
+        {
+            "day":      wd_labels[i],
+            "win_rate": round(wd_wins.get(i, 0) / wd_tot[i] * 100, 1) if wd_tot.get(i) else 0.0,
+            "count":    wd_tot.get(i, 0),
+        }
+        for i in range(7)
+    ]
+
     # --- PnL by hour of day (0–23, UTC) ---
     hr_pnl: dict = defaultdict(float)
     hr_cnt: dict = defaultdict(int)
@@ -350,6 +446,7 @@ async def get_advanced_stats():
         "avg_signal_score":     avg_sc,
         "current_win_streak":   win_streak,
         "current_loss_streak":  loss_streak,
+        "max_loss_streak":      max_loss_streak,
         "monthly_pnl":          monthly_list,
         "pnl_by_weekday":       pnl_by_wd,
         "pnl_by_symbol":        pnl_by_sym,
@@ -358,11 +455,16 @@ async def get_advanced_stats():
         "avg_loss_usdt":        avg_loss,
         "expected_value":       ev,
         "sharpe_ratio":         sharpe,
+        "calmar_ratio":         calmar,
+        "sortino_ratio":        sortino,
         "gross_profit":         gross_profit,
         "gross_loss":           gross_loss,
         "total_wins":           len(win_pnls),
         "total_losses":         len(loss_pnls),
+        "fee_impact_pct":       fee_impact_pct,
         "pnl_by_hour":          pnl_by_hour,
+        "win_rate_by_hour":     win_rate_by_hour,
+        "win_rate_by_weekday":  win_rate_by_wd,
         "score_distribution":   score_distribution,
     }
 
@@ -681,6 +783,68 @@ async def get_strategy_stats():
                 "recent_pnl": [], "updated_at": None,
             })
     return {"strategies": rows, "best": best}
+
+
+@app.get("/api/performance-history")
+async def get_performance_history(days: int = 90):
+    """Daily performance snapshots for historical trend charts (last N days)."""
+    if not state.portfolio_manager:
+        return {"history": []}
+    history = await state.portfolio_manager.get_performance_history(days)
+    return {"history": history}
+
+
+@app.get("/api/bot-config")
+async def get_bot_config():
+    """Dynamic bot configuration — all tunable parameters from settings.
+    Replaces the hardcoded config table on the System page."""
+    from config import settings as _s
+    return {
+        "risk": {
+            "risk_per_trade_pct":       _s.risk_per_trade_pct,
+            "max_leverage":             _s.max_leverage,
+            "max_open_trades":          _s.effective_max_open_trades,
+            "max_daily_trades":         _s.effective_max_daily_trades,
+            "min_risk_reward_ratio":    _s.min_risk_reward_ratio,
+            "max_stop_loss_pct":        _s.max_stop_loss_pct,
+            "min_stop_loss_pct":        _s.min_stop_loss_pct,
+            "max_position_size_pct":    _s.max_position_size_pct,
+            "balance_reserve_pct":      _s.balance_reserve_pct,
+            "max_daily_loss_pct":       _s.max_daily_loss_pct,
+        },
+        "fees": {
+            "taker_fee_pct":            _s.taker_fee_pct,
+            "max_funding_rate_pct":     getattr(_s, "max_funding_rate_pct", 0.10),
+            "funding_periods_estimate": getattr(_s, "funding_periods_estimate", 3),
+        },
+        "position_mgmt": {
+            "trailing_stop_activation_pct": getattr(_s, "trailing_stop_activation_pct", 3.0),
+            "trailing_stop_distance_pct":   getattr(_s, "trailing_stop_distance_pct", 1.0),
+            "breakeven_trigger_pct":        getattr(_s, "breakeven_trigger_pct", 2.0),
+            "max_position_hold_hours":      getattr(_s, "max_position_hold_hours", 18.0),
+            "entry_max_deviation_pct":      getattr(_s, "entry_max_deviation_pct", 0.8),
+            "reversal_exit_pct":            getattr(_s, "reversal_exit_pct", 2.0),
+        },
+        "signals": {
+            "signal_score_threshold":       _s.effective_signal_score_threshold,
+            "watchlist_confirmations":      _s.effective_watchlist_confirmations,
+            "signal_cooldown_minutes":      _s.effective_signal_cooldown_minutes,
+            "research_min_score":           _s.effective_research_min_score,
+            "research_min_mtf_alignment":   _s.effective_research_min_mtf_alignment,
+            "min_ml_confidence":            _s.effective_min_ml_confidence,
+            "min_volume_usdt":              _s.effective_min_volume_usdt,
+            "max_signals_per_scan":         getattr(_s, "max_signals_per_scan", 150),
+        },
+        "mode": {
+            "dry_run":         getattr(_s, "dry_run", True),
+            "training_mode":   getattr(_s, "training_mode", False),
+            "exchange":        getattr(_s, "exchange", "binance"),
+            "binance_testnet": getattr(_s, "binance_testnet", False),
+            "ai_enabled":      getattr(_s, "ai_analysis_enabled", False),
+            "ai_provider":     getattr(_s, "ai_provider", ""),
+            "ai_model":        getattr(_s, "ai_model", ""),
+        },
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -63,6 +63,10 @@ class ResearchLog(Base):
     executed       = Column(Boolean, default=False)
     trade_id       = Column(Integer, nullable=True)  # FK → trades.id
     outcome_pnl    = Column(Float, nullable=True)    # set when trade closes
+    # Detailed analysis tags — used for pattern mining and bot research
+    reasons_json       = Column(Text, nullable=True)        # JSON list: tags that passed
+    failed_reasons_json = Column(Text, nullable=True)       # JSON list: tags that failed
+    ai_analysis_json   = Column(Text, nullable=True)        # JSON: LLM response when available
 
 
 class StrategyStats(Base):
@@ -142,6 +146,9 @@ class CoinDatabase:
         research_score: float,
         mtf_alignment: float,
         passed: bool,
+        reasons: Optional[List[str]] = None,
+        failed_reasons: Optional[List[str]] = None,
+        ai_analysis: Optional[dict] = None,
     ) -> int:
         """Log a research decision. Returns research_log row ID."""
         async with self._sf() as session:
@@ -152,6 +159,9 @@ class CoinDatabase:
                 research_score=research_score,
                 mtf_alignment=mtf_alignment,
                 passed=passed,
+                reasons_json=json.dumps(reasons) if reasons else None,
+                failed_reasons_json=json.dumps(failed_reasons) if failed_reasons else None,
+                ai_analysis_json=json.dumps(ai_analysis) if ai_analysis else None,
             )
             session.add(log)
             await session.flush()   # populate log.id before commit
@@ -308,16 +318,19 @@ class CoinDatabase:
             rows = result.scalars().all()
         return [
             {
-                "id":             r.id,
-                "symbol":         r.symbol,
-                "ts":             r.ts.isoformat() if r.ts else None,
-                "direction":      r.direction,
-                "initial_score":  r.initial_score,
-                "research_score": round(r.research_score, 2),
-                "mtf_alignment":  round(r.mtf_alignment, 2),
-                "passed":         r.passed,
-                "executed":       r.executed,
-                "outcome_pnl":    r.outcome_pnl,
+                "id":               r.id,
+                "symbol":           r.symbol,
+                "ts":               r.ts.isoformat() if r.ts else None,
+                "direction":        r.direction,
+                "initial_score":    r.initial_score,
+                "research_score":   round(r.research_score, 2),
+                "mtf_alignment":    round(r.mtf_alignment, 2),
+                "passed":           r.passed,
+                "executed":         r.executed,
+                "outcome_pnl":      r.outcome_pnl,
+                "reasons":          json.loads(r.reasons_json) if r.reasons_json else [],
+                "failed_reasons":   json.loads(r.failed_reasons_json) if r.failed_reasons_json else [],
+                "ai_analysis":      json.loads(r.ai_analysis_json) if r.ai_analysis_json else None,
             }
             for r in rows
         ]
