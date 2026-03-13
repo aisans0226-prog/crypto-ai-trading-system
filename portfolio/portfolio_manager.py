@@ -202,6 +202,21 @@ class PortfolioManager:
             await self._redis.set("portfolio:balance", self._balance)
         logger.info("Position closed: {} PnL={:.2f} | balance={:.2f}", symbol, pnl, self._balance)
 
+    async def get_closed_trades_pnl(self, trade_ids: List[int]) -> Dict[int, float]:
+        """Batch-fetch pnl_usdt for a list of closed trade DB ids.
+        Returns {trade_id: pnl} — only includes ids that are actually closed."""
+        if not trade_ids:
+            return {}
+        from sqlalchemy import select
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(TradeRecord.id, TradeRecord.pnl_usdt)
+                .where(TradeRecord.id.in_(trade_ids))
+                .where(TradeRecord.status == "closed")
+            )
+            rows = result.fetchall()
+        return {row[0]: float(row[1]) for row in rows if row[1] is not None}
+
     # ── Performance metrics ───────────────────────────────────────────────
     async def calculate_metrics(self) -> dict:
         async with self._session_factory() as session:

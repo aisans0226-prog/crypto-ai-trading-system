@@ -173,6 +173,7 @@ class TradingSystem:
         await self._portfolio.start()
         await self._coin_db.start()
         await self._learner.initialize(self._coin_db)   # load ML training data from PostgreSQL
+        await self._recover_ml_labels_after_restart()   # re-link & auto-label SIGKILL orphans
         await self._alerts.start()
         self._alerts.set_command_handler(self._handle_telegram_command)
         await self._sentiment.start()
@@ -334,6 +335,69 @@ class TradingSystem:
             await self._alerts.send_text(
                 f"❓ Unknown command: `/{cmd}`\n"
                 "Send /help for available commands."
+            )
+
+    # ── ML label recovery after SIGKILL restart ───────────────────────────
+    async def _recover_ml_labels_after_restart(self) -> None:
+        """Re-link open positions to their ML keys and auto-label orphaned closed ones.
+
+        After a SIGKILL restart, _pending_labels is empty but the DB still holds
+        1000s of pending ML samples.  This method:
+          1. Restores _pending_labels for symbols that are still open.
+          2. Batch-labels closed-trade ML samples so self-training can proceed.
+        """
+        pending = self._learner._pending
+        if not pending:
+            return
+
+        open_positions = await self._portfolio.get_open_positions()
+
+        # Build {trade_db_id: ml_key} for samples we can parse
+        parseable: Dict[int, str] = {}
+        for ml_key in pending:
+            try:
+                db_id = int(ml_key.rsplit("_", 1)[-1])
+                parseable[db_id] = ml_key
+            except (ValueError, IndexError):
+                pass
+
+        # Batch-query which of those trade_ids are closed (and their PnL)
+        closed_pnl: Dict[int, float] = {}
+        if parseable:
+            try:
+                closed_pnl = await self._portfolio.get_closed_trades_pnl(
+                    list(parseable.keys())
+                )
+            except Exception as exc:
+                logger.warning("ML label recovery DB query failed: {}", exc)
+
+        restored = labeled = 0
+        for ml_key, entry in list(pending.items()):
+            symbol = entry["symbol"]
+
+            # Case 1: position still open — restore pending_labels so it labels on close
+            if symbol in open_positions:
+                if symbol not in self._pending_labels:
+                    current_trade_id = open_positions[symbol].get("id")
+                    expected_key = f"{symbol}_{current_trade_id}" if current_trade_id else None
+                    if expected_key and expected_key == ml_key:
+                        self._pending_labels[symbol] = ml_key
+                        restored += 1
+                continue
+
+            # Case 2: trade is closed — auto-label with DB pnl
+            try:
+                db_id = int(ml_key.rsplit("_", 1)[-1])
+            except (ValueError, IndexError):
+                continue
+            if db_id in closed_pnl:
+                self._learner.label_trade(ml_key, closed_pnl[db_id])
+                labeled += 1
+
+        if restored or labeled:
+            logger.info(
+                "ML restart recovery: {} labels restored for open, {} orphans auto-labeled",
+                restored, labeled,
             )
 
     # ── Main scan loop ─────────────────────────────────────────────────────
