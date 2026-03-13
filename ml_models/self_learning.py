@@ -111,6 +111,13 @@ class SelfLearningEngine:
 
             # Remove stale unlabeled samples older than 24h (scan-loop zombies)
             await db.cleanup_stale_ml_samples(hours=24)
+
+            # Trigger initial retrain if we have enough data but model was never trained
+            # (handles the case where _new_since_retrain reset to 0 after restart)
+            if self._retrain_count == 0 and len(self._samples_y) >= 30:
+                logger.info("SelfLearning: {} labeled samples found, scheduling initial retrain",
+                            len(self._samples_y))
+                asyncio.get_event_loop().create_task(self._retrain())
         except Exception as exc:
             logger.error("SelfLearning.initialize error (DB not available?): {}", exc)
 
