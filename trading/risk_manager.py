@@ -2,13 +2,14 @@
 trading/risk_manager.py — Strict risk management engine.
 
 Rules enforced:
-  ✓ Risk per trade = 1 % account balance
+  ✓ Risk per trade = 1 % of FREE balance (total balance minus margin in open positions)
   ✓ Maximum leverage = 3×
   ✓ Maximum open trades = 5
   ✓ Maximum trades per day = 3 (configurable)
   ✓ Minimum risk-reward = 1:2
   ✓ Auto stop-loss and take-profit calculation
   ✓ Position-size calculation (USDT notional)
+  ✓ Margin tracking: prevents over-allocation across concurrent positions
 """
 from dataclasses import dataclass
 from datetime import date
@@ -40,6 +41,7 @@ class RiskManager:
     def __init__(self) -> None:
         self._open_trades: int = 0
         self._account_balance: float = settings.account_balance_usdt
+        self._used_margin: float = 0.0    # margin committed to open/pending positions
         self._daily_trades: int = 0
         self._daily_date: date = date.today()
         self._daily_pnl: float = 0.0      # realized PnL for today (resets each UTC day)
@@ -47,6 +49,24 @@ class RiskManager:
     # ── Public ────────────────────────────────────────────────────────────
     def update_balance(self, balance: float) -> None:
         self._account_balance = balance
+        # NOTE: do NOT auto-reset _used_margin here — dry-run relies on it for
+        # accurate free-balance tracking. Live callers that fetch availableBalance
+        # from the exchange should call reset_margin() explicitly right after.
+
+    def reset_margin(self) -> None:
+        """Reset in-memory margin tracking.
+        Call only in live mode right after updating balance from exchange
+        availableBalance — that value already excludes committed margin, so
+        keeping _used_margin would cause double-counting."""
+        self._used_margin = 0.0
+
+    def add_margin(self, margin_usdt: float) -> None:
+        """Reserve margin when a position opens or a LIMIT order is placed."""
+        self._used_margin += max(0.0, margin_usdt)
+
+    def release_margin(self, margin_usdt: float) -> None:
+        """Free margin when a position closes or a LIMIT order is cancelled."""
+        self._used_margin = max(0.0, self._used_margin - margin_usdt)
 
     def update_open_trades(self, count: int) -> None:
         self._open_trades = count
@@ -157,13 +177,24 @@ class RiskManager:
             return None
 
         # ── Position sizing ───────────────────────────────────────────────
-        risk_usdt = self._account_balance * (settings.risk_per_trade_pct / 100.0)
+        # Use free balance (total minus margin already committed to open/pending
+        # positions). This prevents over-allocation when multiple trades are open
+        # or when concurrent signals fire within the same scan cycle.
+        free_balance = max(0.0, self._account_balance - self._used_margin)
+        if free_balance < 10.0:
+            logger.warning(
+                "{} insufficient free balance: {:.2f} USDT free ({:.2f} USDT used as margin) — skip",
+                symbol, free_balance, self._used_margin,
+            )
+            return None
+
+        risk_usdt = free_balance * (settings.risk_per_trade_pct / 100.0)
         leverage = settings.max_leverage
 
         # Position size in quote currency
         risk_pct_of_entry = risk / entry_price
         position_size_usdt = risk_usdt / risk_pct_of_entry
-        position_size_usdt = min(position_size_usdt, self._account_balance * leverage)
+        position_size_usdt = min(position_size_usdt, free_balance * leverage)
 
         quantity = position_size_usdt / entry_price
 
@@ -181,9 +212,12 @@ class RiskManager:
         )
 
         logger.info(
-            "RiskParams | {} {} | entry={} SL={} TP={} qty={} lev={} RR={}",
+            "RiskParams | {} {} | entry={} SL={} TP={} qty={} lev={} RR={} | "
+            "risk=${:.2f}  free_bal=${:.2f}  notional=${:.2f}  margin=${:.2f}",
             symbol, direction, entry_price, stop_loss, take_profit,
             quantity, leverage, round(rr, 2),
+            risk_usdt, free_balance, round(position_size_usdt, 2),
+            round(position_size_usdt / leverage, 2),
         )
         return params
 

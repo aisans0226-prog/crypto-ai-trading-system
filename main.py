@@ -585,6 +585,19 @@ class TradingSystem:
             strategy_name = "FALLBACK"
             logger.info("{} — FALLBACK setup: {} sl={:.6f} tp={:.6f}", signal.symbol, signal.direction, sl, tp)
 
+        # Re-fetch available balance from exchange right before sizing.
+        # Prevents stale balance issues when multiple trades open within the same
+        # scan cycle (each trade sees the true remaining free margin).
+        if not self.dry_run:
+            try:
+                _bal_exec = self._bybit_exec if self.exchange == "bybit" else self._binance_exec
+                _live_bal = await _bal_exec.get_account_balance()
+                if _live_bal > 0:
+                    self._risk.update_balance(_live_bal)
+                    self._risk.reset_margin()  # exchange balance already excludes committed margin
+            except Exception as _bal_exc:
+                logger.debug("Pre-trade balance refresh error: {}", _bal_exc)
+
         # Risk validation & position sizing
         risk_params = self._risk.calculate_position(
             symbol=setup.symbol,
@@ -669,6 +682,10 @@ class TradingSystem:
                 strategy_name=strategy_name,
                 limit_price=limit_price,
             )
+            # Reserve margin immediately so concurrent signals don't size against
+            # the same free balance. Released when this order fills (teardown) or
+            # is finally abandoned after max retries.
+            self._risk.add_margin(risk_params.position_size_usdt / max(risk_params.leverage, 1))
             dry_tag = " [SIM]" if self.dry_run else ""
             logger.info(
                 "⏳ LIMIT entry placed{}: {} {} @ {:.6f} | order_id={} | timeout={}s",
@@ -717,6 +734,7 @@ class TradingSystem:
             if trade_id:
                 meta = self._make_position_meta(risk_params.entry_price)
                 meta["strategy_name"] = strategy_name
+                meta["margin_used"] = risk_params.position_size_usdt / max(risk_params.leverage, 1)
                 self._position_meta[risk_params.symbol] = meta
         else:
             # Live execution
@@ -746,6 +764,7 @@ class TradingSystem:
                         tp_order_id=result.get("tp_order_id"),
                     )
                     meta["strategy_name"] = strategy_name
+                    meta["margin_used"] = risk_params.position_size_usdt / max(risk_params.leverage, 1)
                     self._position_meta[risk_params.symbol] = meta
 
         # Record ML feature vector only when a real trade is opened (not on every signal)
@@ -762,6 +781,9 @@ class TradingSystem:
             self._pending_research_ids[risk_params.symbol] = research_id
 
         if trade_id:
+            # Reserve margin in risk manager (prevents concurrent trades from
+            # over-sizing against the same balance within the same scan cycle).
+            self._risk.add_margin(risk_params.position_size_usdt / max(risk_params.leverage, 1))
             self._risk.update_open_trades(
                 len(await self._portfolio.get_open_positions())
             )
@@ -1081,6 +1103,9 @@ class TradingSystem:
                                 tp_order_id=tp_order_id,
                             )
                             meta["strategy_name"] = pending.strategy_name
+                            # margin_used stored so teardown can release it correctly
+                            # (margin was already reserved when the LIMIT was placed)
+                            meta["margin_used"] = rp.position_size_usdt / max(rp.leverage, 1)
                             self._position_meta[symbol] = meta
                             # Record ML feature vector on actual fill (not on signal)
                             df_cached = self._klines_cache.get(symbol)
@@ -1113,7 +1138,12 @@ class TradingSystem:
 
                         if pending.retry_count < settings.limit_order_max_retries:
                             await self._retry_limit_entry(pending)
+                            # margin stays reserved across retries (same pending order)
                         else:
+                            # Final abandon — release the margin reserved at placement
+                            self._risk.release_margin(
+                                pending.risk_params.position_size_usdt / max(pending.risk_params.leverage, 1)
+                            )
                             logger.info(
                                 "🚫 LIMIT entry abandoned after {} retries: {}",
                                 settings.limit_order_max_retries, symbol,
@@ -1247,6 +1277,11 @@ class TradingSystem:
         Callers are responsible for any Telegram alert and log message.
         """
         await self._portfolio.close_position(symbol, exit_price, pnl)
+        # Release allocated margin BEFORE clearing meta so the risk manager's
+        # free-balance is accurate for the next position sizing calculation.
+        margin_used = self._position_meta.get(symbol, {}).get("margin_used", 0.0)
+        if margin_used > 0:
+            self._risk.release_margin(margin_used)
         strategy_name = self._position_meta.get(symbol, {}).get("strategy_name")
         self._position_meta.pop(symbol, None)
         self._risk.record_trade_closed(pnl)   # update daily PnL for loss-limit guard
