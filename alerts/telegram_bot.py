@@ -3,6 +3,7 @@ alerts/telegram_bot.py — Real-time trade alerts via Telegram and Discord.
 """
 import asyncio
 import html
+import time
 from typing import Optional, Callable, Awaitable
 import aiohttp
 from loguru import logger
@@ -26,6 +27,7 @@ class AlertSystem:
         self._poll_offset: int = 0          # Telegram getUpdates offset
         self._poll_task: Optional[asyncio.Task] = None
         self._muted: bool = False           # suppress all outgoing messages when True
+        self._tg_rate_limit_until: float = 0.0  # Unix timestamp when rate limit expires
 
     @property
     def is_muted(self) -> bool:
@@ -222,6 +224,12 @@ class AlertSystem:
             return
         if self._muted:
             return  # notifications silenced — trading continues normally
+        # Back-off when rate-limited (429)
+        if time.time() < self._tg_rate_limit_until:
+            remaining = int(self._tg_rate_limit_until - time.time())
+            if remaining % 300 == 0:   # log reminder every 5 min
+                logger.warning("Telegram rate-limited — {} s remaining", remaining)
+            return
         url = f"{TELEGRAM_API}/bot{settings.telegram_bot_token}/sendMessage"
         payload = {
             "chat_id": settings.telegram_chat_id,
@@ -231,7 +239,15 @@ class AlertSystem:
         }
         try:
             async with self._session.post(url, json=payload) as r:
-                if r.status != 200:
+                if r.status == 429:
+                    body = await r.json()
+                    retry_after = body.get("parameters", {}).get("retry_after", 60)
+                    self._tg_rate_limit_until = time.time() + retry_after
+                    logger.warning(
+                        "Telegram 429 rate-limit hit — pausing alerts for {:.0f} min",
+                        retry_after / 60,
+                    )
+                elif r.status != 200:
                     body = await r.text()
                     logger.warning("Telegram send failed {}: {}", r.status, body)
         except Exception as exc:

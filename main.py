@@ -54,6 +54,7 @@ from ml_models.self_learning import SelfLearningEngine
 from ml_models.coin_ranker import CoinRanker
 
 from strategy.strategy_registry import StrategyRegistry
+from strategy.trend_strategy import TradeSetup
 
 from trading.risk_manager import RiskManager
 from trading.trade_executor import BinanceExecutor, BybitExecutor
@@ -560,11 +561,32 @@ class TradingSystem:
             )
         except Exception as exc:
             logger.debug("Strategy eval error {}: {}", signal.symbol, exc)
-            return
 
         if not setup:
-            logger.debug("{} — no strategy setup found", signal.symbol)
-            return
+            # Fallback: percentage-based SL/TP when no strategy matches direction
+            price = signal.price
+            if not price or price <= 0:
+                logger.debug("{} — no strategy and no valid price, skip", signal.symbol)
+                return
+            sl_pct = min(1.5, settings.max_stop_loss_pct * 0.6)
+            tp_pct = sl_pct * settings.min_risk_reward_ratio
+            if signal.direction == "LONG":
+                sl = round(price * (1 - sl_pct / 100), 8)
+                tp = round(price * (1 + tp_pct / 100), 8)
+            else:
+                sl = round(price * (1 + sl_pct / 100), 8)
+                tp = round(price * (1 - tp_pct / 100), 8)
+            setup = TradeSetup(
+                symbol=signal.symbol,
+                direction=signal.direction,
+                entry_price=price,
+                stop_loss=sl,
+                take_profit=tp,
+                leverage=settings.max_leverage,
+                risk_reward=settings.min_risk_reward_ratio,
+            )
+            strategy_name = "FALLBACK"
+            logger.info("{} — FALLBACK setup: {} sl={:.6f} tp={:.6f}", signal.symbol, signal.direction, sl, tp)
 
         # Risk validation & position sizing
         risk_params = self._risk.calculate_position(

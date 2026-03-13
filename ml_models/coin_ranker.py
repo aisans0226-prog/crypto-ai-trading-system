@@ -109,12 +109,13 @@ class CoinRanker:
             btc_ret = self._btc_returns.tail(50)
             min_len = min(len(coin_ret), len(btc_ret))
             if min_len >= 20:
-                corr = float(
-                    pd.Series(coin_ret.values[-min_len:]).corr(
-                        pd.Series(btc_ret.values[-min_len:])
-                    )
-                )
-                corr_penalty = max(0, corr - 0.5) * 0.2
+                a = pd.Series(coin_ret.values[-min_len:])
+                b = pd.Series(btc_ret.values[-min_len:])
+                # Guard: skip correlation when either series has no variance
+                if a.std() > 1e-10 and b.std() > 1e-10:
+                    corr = float(a.corr(b))
+                    if not pd.isna(corr):
+                        corr_penalty = max(0, corr - 0.5) * 0.2
 
         composite = (
             momentum_score * 0.25 + vol_score * 0.10 + vol_score_val * 0.15

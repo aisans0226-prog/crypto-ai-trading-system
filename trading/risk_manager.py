@@ -149,9 +149,9 @@ class RiskManager:
             return None
 
         rr = reward / risk
-        if rr < settings.min_risk_reward_ratio:
-            logger.debug(
-                "{} RR {:.2f} < minimum {:.2f} — skip",
+        if round(rr, 4) < settings.min_risk_reward_ratio:
+            logger.info(
+                "{} RR {:.2f} < min {:.2f} — skip",
                 symbol, rr, settings.min_risk_reward_ratio,
             )
             return None
