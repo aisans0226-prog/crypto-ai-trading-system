@@ -398,3 +398,63 @@ class PortfolioManager:
             "total_notional_usdt": round(total_notional, 2),
             "exposure_pct": round(exposure_pct, 2),
         }
+
+    async def reset_session(self, backup_dir: str = "backups") -> dict:
+        """Backup + wipe trade history and performance data for a fresh session.
+
+        Preserved (NOT touched): ml_training_samples, coin_stats, research_log.
+        Open trade records are kept intact — they mirror live exchange positions.
+
+        Returns dict with backup filename and counts.
+        """
+        import os
+        os.makedirs(backup_dir, exist_ok=True)
+        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        backup_file = os.path.join(backup_dir, f"session_backup_{ts}.json")
+
+        # Snapshot everything before deletion
+        async with self._session_factory() as session:
+            from sqlalchemy import select
+            trades_res = await session.execute(select(TradeRecord))
+            all_trades = trades_res.scalars().all()
+            snaps_res = await session.execute(select(PerformanceSnapshot))
+            all_snaps = snaps_res.scalars().all()
+
+        def _ser(v):
+            return v.isoformat() if isinstance(v, datetime) else v
+
+        backup_data = {
+            "timestamp": ts,
+            "trades": [
+                {c.name: _ser(getattr(t, c.name)) for c in TradeRecord.__table__.columns}
+                for t in all_trades
+            ],
+            "performance_snapshots": [
+                {c.name: _ser(getattr(s, c.name)) for c in PerformanceSnapshot.__table__.columns}
+                for s in all_snaps
+            ],
+        }
+        with open(backup_file, "w", encoding="utf-8") as f:
+            json.dump(backup_data, f, indent=2)
+
+        # Delete closed/cancelled trades + all performance snapshots
+        async with self._session_factory() as session:
+            await session.execute(text("DELETE FROM performance_snapshots"))
+            await session.execute(
+                text("DELETE FROM trades WHERE status IN ('closed', 'cancelled')")
+            )
+            await session.commit()
+
+        # Clear any cached aggregate metrics from Redis (balance + positions keys are kept)
+        if self._redis:
+            try:
+                await self._redis.delete("portfolio:metrics")
+            except Exception:
+                pass
+
+        n_trades = len(backup_data["trades"])
+        n_snaps = len(backup_data["performance_snapshots"])
+        logger.info(
+            "Session reset: backed up {} trades + {} snapshots → {}", n_trades, n_snaps, backup_file
+        )
+        return {"backup_file": backup_file, "trades_backed_up": n_trades, "snapshots_backed_up": n_snaps}

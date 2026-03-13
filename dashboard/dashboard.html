@@ -233,6 +233,42 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
 </head>
 <body>
 <div id="toast"></div>
+
+<!-- Reset Session Confirmation Modal -->
+<div id="rst-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:9999;align-items:center;justify-content:center">
+  <div style="background:var(--card);border:1px solid rgba(255,68,102,.5);border-radius:var(--r);padding:28px 32px;max-width:500px;width:92%;box-shadow:0 8px 40px rgba(0,0,0,.7)">
+    <div style="font-size:1rem;font-weight:700;color:var(--red);margin-bottom:10px">⚠ Confirm Session Reset</div>
+    <div style="font-size:.8rem;color:var(--mut);line-height:1.6;margin-bottom:14px">
+      Xoá toàn bộ lịch sử giao dịch và dữ liệu hiệu suất để bắt đầu phiên mới. Một bản sao lưu đầy đủ sẽ được tự động lưu vào thư mục <code style="background:var(--bg3);padding:1px 5px;border-radius:3px">backups/</code> trước khi xoá.
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;font-size:.75rem;line-height:1.8">
+      <div>
+        <div style="color:var(--red);font-weight:600;margin-bottom:3px">Sẽ bị xoá:</div>
+        <div style="color:var(--mut)">✗ Lịch sử lệnh (closed/cancelled)</div>
+        <div style="color:var(--mut)">✗ Performance snapshots</div>
+        <div style="color:var(--mut)">✗ Watchlist &amp; signal cooldowns</div>
+        <div style="color:var(--mut)">✗ Daily trade/loss counters</div>
+        <div style="color:var(--mut)">✗ Pending LIMIT order tracking</div>
+        <div style="color:var(--mut)">✗ Signal feed cache</div>
+      </div>
+      <div>
+        <div style="color:var(--grn);font-weight:600;margin-bottom:3px">Được giữ lại:</div>
+        <div style="color:var(--mut)">✓ ML training samples</div>
+        <div style="color:var(--mut)">✓ Per-coin statistics</div>
+        <div style="color:var(--mut)">✓ Research log</div>
+        <div style="color:var(--mut)">✓ Lệnh đang mở (sàn không bị ảnh hưởng)</div>
+        <div style="color:var(--mut)">✓ Account balance</div>
+      </div>
+    </div>
+    <div style="padding:9px 13px;background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.3);border-radius:6px;font-size:.75rem;color:var(--yel);margin-bottom:18px">
+      💾 Backup tự động được lưu tại <code style="background:rgba(0,0,0,.2);padding:1px 4px">backups/session_backup_[timestamp].json</code>
+    </div>
+    <div style="display:flex;gap:10px;justify-content:flex-end">
+      <button class="btn bo bsm" onclick="closeResetModal()" style="padding:9px 22px">Huỷ</button>
+      <button class="btn bsm" id="rst-confirm-btn" onclick="doReset()" style="background:var(--red);color:#fff;border:1px solid var(--red);padding:9px 26px;font-size:.83rem;font-weight:600">Xác nhận Reset</button>
+    </div>
+  </div>
+</div>
 <div id="ov" onclick="cSB()"></div>
 <div id="app">
 <!-- Sidebar -->
@@ -697,7 +733,41 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
     </div>
   </div>
 
-  <!-- Row 3: Live System Log -->
+  <!-- Row 3: Danger Zone -->
+  <div class="card fw" style="border:1px solid rgba(255,68,102,.25);margin-bottom:13px">
+    <div class="ch">
+      <span class="ct2" style="color:var(--red)">⚠ Danger Zone</span>
+      <span style="font-size:.66rem;color:var(--mut);margin-left:8px">Dữ liệu đã học được vẫn được bảo toàn — backup tự động trước mỗi lần reset</span>
+    </div>
+    <div style="display:flex;align-items:flex-start;gap:24px;flex-wrap:wrap">
+      <!-- Description + Button -->
+      <div style="flex:1;min-width:240px">
+        <div style="font-size:.84rem;color:var(--txt);font-weight:600;margin-bottom:6px">Reset Bot Session</div>
+        <div style="font-size:.76rem;color:var(--mut);line-height:1.55;margin-bottom:14px">
+          Xoá toàn bộ số liệu hiện tại (lịch sử lệnh, performance, watchlist, daily counters) để kiểm tra xem bot có trade đúng với cài đặt mới hay không.<br>
+          <span style="color:var(--yel)">⚡ ML training data, coin stats và research log được giữ nguyên.</span>
+        </div>
+        <button onclick="showResetModal()" style="background:rgba(255,68,102,.12);color:var(--red);border:1px solid rgba(255,68,102,.4);padding:8px 20px;border-radius:7px;font-size:.82rem;font-weight:600;cursor:pointer;transition:background .15s" onmouseover="this.style.background='rgba(255,68,102,.22)'" onmouseout="this.style.background='rgba(255,68,102,.12)'">
+          🗑 Reset Session
+        </button>
+      </div>
+      <!-- Quick reference list -->
+      <div style="flex:1;min-width:200px;font-size:.73rem;color:var(--mut);line-height:1.75">
+        <div style="color:var(--red);font-weight:600;margin-bottom:2px">Sẽ bị xoá:</div>
+        <div>✗ Closed / cancelled trades (DB)</div>
+        <div>✗ Performance snapshots (DB)</div>
+        <div>✗ Watchlist &amp; signal cooldowns</div>
+        <div>✗ Daily counters &amp; margin state</div>
+        <div>✗ Signal feed &amp; pending LIMIT tracking</div>
+        <div style="color:var(--grn);font-weight:600;margin-top:8px;margin-bottom:2px">Được giữ lại:</div>
+        <div>✓ ML training samples</div>
+        <div>✓ Per-coin statistics &amp; research log</div>
+        <div>✓ Lệnh đang mở trên sàn</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Row 4: Live System Log -->
   <div class="card fw">
     <div class="ch"><span class="ct2">Live System Log</span></div>
     <div id="logc"></div>
@@ -1128,6 +1198,10 @@ function cwS(){
     }
     if(d.type==='pending_orders') rPending(d.data.orders||[]);
     if(d.type==='system_update')toast(d.data.message||'Updated',d.data.success?'ok':'err');
+    if(d.type==='session_reset'){
+      toast('✅ Session reset — backup đã lưu','suc');
+      setTimeout(function(){lD();},600);
+    }
   };
   ws.onclose=function(){
     document.getElementById('wdot').className='sd';
@@ -2452,6 +2526,43 @@ async function saveAI(){
     if(id==='coindb'&&_tick%3===0)await lCoinDB();
   },10000);
 })();
+
+// ── Reset Session ──────────────────────────────────────────────────────────
+function showResetModal(){
+  document.getElementById('rst-modal').style.display='flex';
+}
+function closeResetModal(){
+  document.getElementById('rst-modal').style.display='none';
+}
+async function doReset(){
+  var btn=document.getElementById('rst-confirm-btn');
+  btn.disabled=true;btn.textContent='Đang reset…';
+  try{
+    var r=await fetch('/api/reset-session',{method:'POST'});
+    var d=await r.json();
+    closeResetModal();
+    if(d.ok){
+      var bfn=(d.backup_file||'').replace(/\\/g,'/').split('/').pop();
+      toast('✅ Session reset — '+d.trades_backed_up+' lệnh đã backup → '+bfn,'suc');
+      // Refresh data on all relevant pages
+      lD();
+      var act=document.querySelector('.page.active');
+      if(act){
+        var pg=act.id.replace('page-','');
+        if(pg==='performance')lPf();
+        if(pg==='history')lHistory();
+        if(pg==='coindb')lCoinDB();
+        if(pg==='trades')lTr();
+      }
+    }else{
+      toast('Reset thất bại: '+(d.error||'lỗi không xác định'),'err');
+    }
+  }catch(e){
+    toast('Reset lỗi: '+e.message,'err');
+  }finally{
+    btn.disabled=false;btn.textContent='Xác nhận Reset';
+  }
+}
 </script>
 </body>
 </html>

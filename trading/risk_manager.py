@@ -60,6 +60,17 @@ class RiskManager:
         keeping _used_margin would cause double-counting."""
         self._used_margin = 0.0
 
+    def reset_all_state(self) -> None:
+        """Reset all runtime counters for a clean session start.
+        Called by the dashboard Reset Session action.
+        Does NOT change _account_balance — that is re-synced from the exchange."""
+        self._daily_trades = 0
+        self._daily_pnl = 0.0
+        self._daily_date = date.today()
+        self._used_margin = 0.0
+        self._open_trades = 0
+        logger.info("RiskManager: all runtime counters reset")
+
     def add_margin(self, margin_usdt: float) -> None:
         """Reserve margin when a position opens or a LIMIT order is placed."""
         self._used_margin += max(0.0, margin_usdt)

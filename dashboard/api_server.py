@@ -44,6 +44,7 @@ class AppState:
     auto_updater = None
     coin_database = None          # CoinDatabase — per-coin learning stats
     strategy_registry = None      # StrategyRegistry — auto strategy discovery
+    trading_system = None         # TradingSystem — set in main.py __init__
     pending_entry_orders: dict = {}   # symbol -> PendingEntry (LIMIT orders awaiting fill)
     recent_signals: List[dict] = []
     coin_rankings: List[dict] = []
@@ -1283,6 +1284,32 @@ async def ws_endpoint(websocket: WebSocket):
     finally:
         if websocket in state.connected_ws:
             state.connected_ws.remove(websocket)
+
+
+@app.post("/api/reset-session")
+async def reset_session():
+    """Backup + wipe trade history, performance data, and in-memory runtime state.
+
+    PRESERVED (not touched): ml_training_samples, coin_stats, research_log.
+    CLEARED:
+      - DB: closed/cancelled trades, performance_snapshots
+      - Memory: watchlist, signal cooldowns, position_meta, pending LIMIT orders,
+                signal feed, bot_stats counters, RiskManager daily/margin state
+    """
+    if not state.portfolio_manager:
+        return {"ok": False, "error": "Bot portfolio not initialised"}
+
+    backup_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "backups")
+    try:
+        result = await state.portfolio_manager.reset_session(backup_dir)
+        if state.trading_system:
+            state.trading_system.reset_runtime_state()
+        await broadcast("session_reset", {"backup": result["backup_file"]})
+        logger.info("Dashboard: session reset → {}", result["backup_file"])
+        return {"ok": True, **result}
+    except Exception as exc:
+        logger.exception("Session reset failed")
+        return {"ok": False, "error": str(exc)}
 
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)

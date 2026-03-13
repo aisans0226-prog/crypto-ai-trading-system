@@ -160,6 +160,7 @@ class TradingSystem:
         state.auto_updater = self._updater
         state.coin_database = self._coin_db
         state.strategy_registry = None     # set after StrategyRegistry is initialised in start()
+        state.trading_system = self        # expose for dashboard reset-session endpoint
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
     async def start(self) -> None:
@@ -261,6 +262,37 @@ class TradingSystem:
         await self._portfolio.stop()
         await self._updater.stop()
         logger.info("System stopped cleanly")
+
+    def reset_runtime_state(self) -> None:
+        """Clear all in-memory runtime state for a clean session test.
+
+        What IS reset: watchlist, signal cooldowns, position metadata, ML prediction
+        cache, klines cache, pending LIMIT order tracking, signal feed, bot_stats
+        counters, and all RiskManager daily/margin counters.
+
+        What is NOT reset: exchange positions (real orders on Binance/Bybit),
+        account balance, and any database tables (handled separately by
+        PortfolioManager.reset_session).
+        """
+        self._watchlist.clear()
+        self._signal_cooldowns.clear()
+        self._pending_labels.clear()
+        self._position_meta.clear()
+        self._klines_cache.clear()
+        self._ml_predictions_cache.clear()
+        self._prev_open_positions.clear()
+        self._pending_research_ids.clear()
+        # Clear in-place so state.pending_entry_orders (shared reference) also empties
+        self._pending_entry_orders.clear()
+        state.recent_signals.clear()
+        state.bot_stats.update({
+            "last_scan_ts": None,
+            "watchlist_count": 0,
+            "daily_trades_today": 0,
+            "scan_cycle": 0,
+        })
+        self._risk.reset_all_state()
+        logger.info("TradingSystem: all runtime state reset for new session")
 
     # ── WS event callback ─────────────────────────────────────────────────
     async def _on_ws_event(self, event: str, payload: dict) -> None:
