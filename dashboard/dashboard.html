@@ -6,7 +6,7 @@
 <title>Crypto AI Trading System</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
-:root{--bg:#090d17;--bg2:#0e1420;--bg3:#131b2b;--card:#141e2e;--border:#1c2a3e;--accent:#00d4aa;--a2:#3b82f6;--red:#ff4466;--yel:#fbbf24;--grn:#10b981;--txt:#e2e8f0;--mut:#64748b;--r:10px;--sb:240px;--hdr:60px}
+:root{--bg:#060b14;--bg2:#080f1b;--bg3:#0c1526;--card:#101928;--card2:#13203a;--border:#1a2e4a;--border2:#243a5e;--accent:#00d4aa;--a2:#3b82f6;--a3:#8b5cf6;--red:#f43f5e;--yel:#f59e0b;--grn:#10b981;--txt:#e2e8f0;--mut:#5a7099;--mut2:#8fa3c0;--r:12px;--sb:220px;--hdr:58px}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--txt);font-family:'Segoe UI',system-ui,sans-serif;font-size:14px;overflow-x:hidden}
 ::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-track{background:var(--bg)}::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
@@ -246,6 +246,137 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
 .hc-icon{font-size:1.3rem;line-height:1}
 .hc-label{font-size:.72rem;color:var(--mut);text-transform:uppercase;letter-spacing:.05em;font-weight:600}
 .hc-msg{font-size:.77rem;color:var(--txt);margin-top:2px}
+
+/* ═══════════════════════════════════════════════════════
+   PROFESSIONAL REDESIGN — override rules below
+   ═══════════════════════════════════════════════════════ */
+
+/* ── Sidebar ── */
+#sb{background:linear-gradient(180deg,#09101e 0%,#060b14 100%);border-right:1px solid rgba(26,46,74,.8);width:var(--sb)}
+.logo{padding:18px 16px 18px;background:linear-gradient(135deg,rgba(0,212,170,.07),rgba(59,130,246,.04));border-bottom:1px solid var(--border)}
+.logo span{font-size:1.02rem;font-weight:800;letter-spacing:.04em;background:linear-gradient(135deg,var(--accent) 20%,var(--a2));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.dot{width:8px;height:8px;background:var(--accent);box-shadow:0 0 8px rgba(0,212,170,.65)}
+nav{padding:6px 0}
+nav a{font-size:.82rem;font-weight:500;border-radius:8px;margin:1px 8px;padding:9px 14px;color:var(--mut2);gap:9px}
+nav a:hover{background:rgba(255,255,255,.04);color:var(--txt)}
+nav a.active{background:linear-gradient(90deg,rgba(0,212,170,.14),rgba(0,212,170,.04));border-left:3px solid var(--accent);padding-left:11px;color:var(--accent);font-weight:600}
+nav a svg{width:15px;height:15px}
+.ns{font-size:.58rem;color:rgba(90,112,153,.6);text-transform:uppercase;letter-spacing:.12em;font-weight:700;padding:14px 16px 3px}
+
+/* ── Header ── */
+header{height:var(--hdr);background:rgba(8,15,27,.95);backdrop-filter:blur(20px);border-bottom:1px solid rgba(26,46,74,.8)}
+.ptl{font-weight:700;font-size:.9rem;letter-spacing:.02em;color:var(--txt)}
+.sbg{background:rgba(255,255,255,.04);border:1px solid var(--border);padding:4px 10px;border-radius:20px;font-size:.7rem;gap:5px}
+.sd.live{background:var(--grn);box-shadow:0 0 6px rgba(16,185,129,.6)}
+
+/* ── Stat Cards ── */
+.sg{display:grid;grid-template-columns:repeat(3,1fr);gap:11px;margin-bottom:4px}
+.sg-section{grid-column:1/-1;display:flex;align-items:center;gap:9px;font-size:.59rem;color:var(--mut);text-transform:uppercase;letter-spacing:.12em;font-weight:700;padding:10px 0 2px;margin-bottom:-2px}
+.sg-section::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,var(--border),transparent)}
+.sc{background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:15px 15px 13px;position:relative;overflow:hidden;transition:border-color .2s,transform .15s}
+.sc:hover{border-color:var(--border2);transform:translateY(-1px)}
+.sc::after{content:'';position:absolute;top:0;left:0;width:3px;height:100%;background:linear-gradient(180deg,var(--accent),rgba(0,212,170,.2));border-radius:3px 0 0 3px}
+.sc:nth-child(4n+5)::after{background:linear-gradient(180deg,var(--a2),rgba(59,130,246,.2))}
+.sc:nth-child(4n+6)::after{background:linear-gradient(180deg,var(--a2),rgba(59,130,246,.2))}
+.sc:nth-child(4n+7)::after{background:linear-gradient(180deg,var(--a2),rgba(59,130,246,.2))}
+.sc:nth-child(4n+8)::after{background:linear-gradient(180deg,var(--a3),rgba(139,92,246,.2))}
+.sc:nth-child(4n+9)::after{background:linear-gradient(180deg,var(--a3),rgba(139,92,246,.2))}
+.sc:nth-child(4n+10)::after{background:linear-gradient(180deg,var(--a3),rgba(139,92,246,.2))}
+.sl{font-size:.64rem;color:var(--mut2);text-transform:uppercase;letter-spacing:.1em;margin-bottom:7px;display:flex;align-items:center;gap:5px;font-weight:600}
+.sv{font-size:1.6rem;font-weight:800;line-height:1;letter-spacing:-.02em}
+.svc{font-size:.68rem;margin-top:5px;color:var(--mut);display:flex;align-items:center;gap:4px}
+
+/* ── General Cards ── */
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:15px;transition:border-color .2s}
+.card:hover{border-color:var(--border2)}
+.ch{display:flex;align-items:center;justify-content:space-between;margin-bottom:13px}
+.ct2{font-size:.67rem;color:var(--mut2);text-transform:uppercase;letter-spacing:.1em;font-weight:700}
+.ca{font-size:.68rem;color:var(--accent);cursor:pointer;font-weight:600}
+.ca:hover{text-decoration:underline}
+
+/* ── Bot Status Panel ── */
+.bsp{background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:0;margin-bottom:14px;display:flex;align-items:stretch;flex-wrap:wrap;overflow:hidden}
+.bsi{display:flex;flex-direction:column;justify-content:center;gap:3px;padding:10px 16px;border-right:1px solid var(--border);min-width:0}
+.bsi:last-child{border-right:none;margin-left:auto;flex-direction:row;align-items:center;justify-content:flex-end;gap:7px;padding:8px 14px}
+.bsl{font-size:.57rem;color:var(--mut);text-transform:uppercase;letter-spacing:.09em;font-weight:600;white-space:nowrap}
+.bsv{font-size:.82rem;font-weight:700;line-height:1.2;white-space:nowrap}
+
+/* ── Buttons ── */
+.btn{border-radius:8px;font-weight:600;letter-spacing:.02em;transition:all .15s}
+.bp{background:linear-gradient(135deg,#00d4aa,#00a882);color:#001a14;box-shadow:0 2px 8px rgba(0,212,170,.3)}
+.bp:hover{opacity:1!important;box-shadow:0 4px 18px rgba(0,212,170,.45);transform:translateY(-1px)}
+.bo{background:rgba(255,255,255,.04);border:1px solid var(--border)!important;color:var(--mut2)}
+.bo:hover{background:rgba(255,255,255,.07)!important;border-color:var(--border2)!important;color:var(--txt)!important;opacity:1!important}
+
+/* ── Table ── */
+.tbl th{background:rgba(8,15,27,.6);border-bottom:1px solid var(--border2);font-size:.62rem;letter-spacing:.08em;padding:8px 10px}
+.tbl td{padding:8px 10px;font-size:.78rem;border-bottom:1px solid rgba(26,46,74,.5)}
+.tbl tr:last-child td{border-bottom:none}
+.tbl tr:hover td{background:rgba(255,255,255,.02)}
+
+/* ── Signals ── */
+.ss{border-radius:8px;border-width:1px;border-style:solid}
+.ssh{background:rgba(0,212,170,.08);color:var(--accent);border-color:rgba(0,212,170,.25)}
+.ssm{background:rgba(245,158,11,.08);color:var(--yel);border-color:rgba(245,158,11,.2)}
+.tag{padding:2px 6px;border-radius:5px;background:rgba(255,255,255,.04);border:1px solid var(--border);color:var(--mut2);font-size:.6rem}
+.slong{background:rgba(16,185,129,.1);color:var(--grn);border:1px solid rgba(16,185,129,.25)}
+.sshort{background:rgba(244,63,94,.1);color:var(--red);border:1px solid rgba(244,63,94,.25)}
+
+/* ── Progress bar ── */
+.prog{height:4px;background:rgba(255,255,255,.06);border-radius:4px}
+.prog .bar{background:linear-gradient(90deg,var(--accent),var(--a2));border-radius:4px}
+
+/* ── Heatmap ── */
+.hmc{border-radius:8px;border:1px solid rgba(255,255,255,.06);transition:transform .15s,box-shadow .15s}
+.hmc:hover{transform:scale(1.07);box-shadow:0 4px 16px rgba(0,0,0,.4)}
+
+/* ── Ranking items ── */
+.rg{border-radius:7px}
+.gaplus{background:rgba(0,212,170,.15);border:1px solid rgba(0,212,170,.2)}
+.ga{background:rgba(59,130,246,.15);border:1px solid rgba(59,130,246,.2)}
+
+/* ── Balance edit ── */
+.bal-edit-form input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(0,212,170,.12)}
+
+/* ── Live dot ── */
+.live-dot{background:var(--grn);box-shadow:0 0 5px rgba(16,185,129,.6)}
+
+/* ── Risk metric cards ── */
+.rmcard{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px}
+.rml{font-size:.6rem;color:var(--mut2);text-transform:uppercase;letter-spacing:.09em;font-weight:600;margin-bottom:4px}
+.rmv{font-size:1.1rem;font-weight:800;line-height:1.1}
+
+/* ── Update cards ── */
+.uc{background:var(--bg3);border-radius:9px;padding:11px 13px;border:1px solid var(--border);margin-bottom:8px}
+.cbg{font-family:monospace;padding:3px 8px;background:var(--bg);border-radius:5px;font-size:.7rem;color:var(--accent);border:1px solid var(--border)}
+
+/* ── System log ── */
+#logc{background:var(--bg);border:1px solid var(--border);border-radius:8px}
+
+/* ── Health cards ── */
+.health-card{padding:14px 16px;border-radius:10px}
+.health-card.ok{background:rgba(16,185,129,.04);border-color:rgba(16,185,129,.3)!important}
+.health-card.warn{background:rgba(245,158,11,.04);border-color:rgba(245,158,11,.3)!important}
+.health-card.error{background:rgba(244,63,94,.04);border-color:rgba(244,63,94,.3)!important}
+
+/* ── Mode badge ── */
+#mode-badge{font-size:.69rem;font-weight:700;letter-spacing:.06em;border-radius:20px}
+
+/* ── Config form ── */
+.bcfg-fld input[type=number]:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(0,212,170,.1)}
+.bcfg-toggle{border-radius:10px;padding:11px 14px}
+.bcfg-toggle:hover{border-color:var(--accent)!important;background:rgba(0,212,170,.03)}
+
+/* ── Mobile responsive ── */
+@media(max-width:768px){
+  .sg{grid-template-columns:1fr 1fr}
+  .sg-section{display:none}
+  #sb{width:var(--sb)}
+}
+@media(max-width:480px){
+  .sg{grid-template-columns:1fr}
+}
+/* ═══════════════════════════════════════════════════════ */
 </style>
 </head>
 <body>
@@ -361,8 +492,8 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
   </div>
   <div class="hr2">
     <div class="sbg"><div class="sd" id="wdot"></div><span id="wst">Connecting</span></div>
-    <div id="mode-badge" style="display:none;padding:4px 10px;border-radius:20px;font-size:.71rem;font-weight:700;letter-spacing:.04em"></div>
-    <button class="btn bp bsm" onclick="rAll()">Refresh</button>
+    <div id="mode-badge" style="display:none;padding:3px 10px;border-radius:20px;font-size:.69rem;font-weight:700;letter-spacing:.05em"></div>
+    <button class="btn bp bsm" onclick="rAll()" style="padding:5px 13px">↻ Refresh</button>
   </div>
 </header>
 <div id="ct">
@@ -370,6 +501,8 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
 <!-- DASHBOARD PAGE -->
 <div class="page active" id="page-dashboard">
   <div class="sg">
+    <!-- ── Account Health ───────────────────── -->
+    <div class="sg-section">Account Health</div>
     <div class="sc">
       <div class="sl">
         Total Equity <span class="live-dot" style="margin-left:3px"></span>
@@ -389,31 +522,35 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
       </div>
     </div>
     <div class="sc"><div class="sl">Daily PnL</div><div class="sv" id="s1">$--</div><div class="svc neu">Today</div></div>
-    <div class="sc"><div class="sl">Win Rate</div><div class="sv" id="s2">--%</div><div class="svc neu">All time</div></div>
-    <div class="sc"><div class="sl">Open Trades</div><div class="sv" id="s3">--</div><div class="svc neu" id="s3-sub">Max --</div></div>
-    <div class="sc"><div class="sl">Profit Factor</div><div class="sv" id="s4">--</div><div class="svc neu">Gross P/L</div></div>
-    <div class="sc"><div class="sl">Max Drawdown</div><div class="sv neg" id="s5">--%</div><div class="svc neu">Peak to trough</div></div>
-    <div class="sc"><div class="sl">Total PnL</div><div class="sv" id="s6">$--</div><div class="svc neu">All closed trades</div></div>
-    <div class="sc"><div class="sl">Daily Trades</div><div class="sv" id="s7">--</div><div class="svc neu" id="s7-sub">Max -- today</div></div>
     <div class="sc"><div class="sl">Unrealized PnL</div><div class="sv" id="s8">$--</div><div class="svc neu">Open positions <span class="live-dot"></span></div></div>
+    <!-- ── Performance ──────────────────────── -->
+    <div class="sg-section">Performance</div>
+    <div class="sc"><div class="sl">Win Rate</div><div class="sv" id="s2">--%</div><div class="svc neu">All time</div></div>
+    <div class="sc"><div class="sl">Profit Factor</div><div class="sv" id="s4">--</div><div class="svc neu">Gross P/L ratio</div></div>
+    <div class="sc"><div class="sl">Max Drawdown</div><div class="sv neg" id="s5">--%</div><div class="svc neu">Peak to trough</div></div>
+    <!-- ── Activity ─────────────────────────── -->
+    <div class="sg-section">Activity</div>
+    <div class="sc"><div class="sl">Total PnL</div><div class="sv" id="s6">$--</div><div class="svc neu">All closed trades</div></div>
+    <div class="sc"><div class="sl">Open Trades</div><div class="sv" id="s3">--</div><div class="svc neu" id="s3-sub">Max --</div></div>
+    <div class="sc"><div class="sl">Daily Trades</div><div class="sv" id="s7">--</div><div class="svc neu" id="s7-sub">Max -- today</div></div>
   </div>
   <!-- Bot Status Panel -->
   <div class="bsp" id="bst-panel">
     <div class="bsi"><span class="bsl">Mode</span><span class="bsv" id="bst-mode">--</span></div>
     <div class="bsi"><span class="bsl">Threshold</span><span class="bsv badge-acc" id="bst-thr">--</span></div>
-    <div class="bsi"><span class="bsl">Scan Cycle</span><span class="bsv" id="bst-cycle">#--</span></div>
-    <div class="bsi"><span class="bsl">Watchlist</span><span class="bsv badge-yel" id="bst-wl">-- coins</span></div>
+    <div class="bsi"><span class="bsl">Scan #</span><span class="bsv" id="bst-cycle">#--</span></div>
+    <div class="bsi"><span class="bsl">Watchlist</span><span class="bsv badge-yel" id="bst-wl">--</span></div>
     <div class="bsi"><span class="bsl">Signals</span><span class="bsv" id="bst-sig">--</span></div>
     <div class="bsi"><span class="bsl">Last Scan</span><span class="bsv" id="bst-ts">--</span></div>
     <div class="bsi"><span class="bsl">Uptime</span><span class="bsv" id="bst-up">--</span></div>
-    <div class="bsi" style="margin-left:auto">
-      <button id="bot-toggle-btn" onclick="toggleBot()" style="padding:5px 14px;border-radius:6px;border:none;font-size:.75rem;font-weight:700;cursor:pointer;transition:.2s;background:var(--grn);color:#fff">▶ Running</button>
-      <button onclick="emergencyKill()" style="padding:5px 12px;border-radius:6px;border:none;font-size:.74rem;font-weight:700;cursor:pointer;background:var(--red);color:#fff;margin-left:6px" title="Emergency Kill: pause + cancel pending + close all">🔴 Kill</button>
+    <div class="bsi">
+      <button id="bot-toggle-btn" onclick="toggleBot()" style="padding:5px 14px;border-radius:7px;border:none;font-size:.73rem;font-weight:700;cursor:pointer;transition:.2s;background:var(--grn);color:#fff">▶ Running</button>
+      <button onclick="emergencyKill()" style="padding:5px 12px;border-radius:7px;border:none;font-size:.73rem;font-weight:700;cursor:pointer;background:rgba(244,63,94,.15);color:var(--red);border:1px solid rgba(244,63,94,.35)" title="Emergency Kill">🔴 Kill</button>
     </div>
   </div>
   <div class="cg">
     <div class="card">
-      <div class="ch"><span class="ct2">PnL Trend (last 30 trades)</span><span class="ca" onclick="rCharts()">Refresh</span></div>
+      <div class="ch"><span class="ct2">PnL Trend — Last 30 Trades</span><span class="ca" onclick="rCharts()" style="display:flex;align-items:center;gap:4px">↻ Refresh</span></div>
       <div class="cw"><canvas id="pc"></canvas></div>
     </div>
     <div class="card">
@@ -423,11 +560,11 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
   </div>
   <div class="tc">
     <div class="card">
-      <div class="ch"><span class="ct2">Recent Signals</span><span class="ca" onclick="goto('signals')">All signals</span></div>
+      <div class="ch"><span class="ct2">Recent Signals</span><span class="ca" onclick="goto('signals')">View all →</span></div>
       <div id="dsig">--</div>
     </div>
     <div class="card">
-      <div class="ch"><span class="ct2">Top AI-Ranked Coins</span><span class="ca" onclick="goto('rankings')">Full list</span></div>
+      <div class="ch"><span class="ct2">Top AI-Ranked Coins</span><span class="ca" onclick="goto('rankings')">Full list →</span></div>
       <div id="drnk">--</div>
     </div>
   </div>
