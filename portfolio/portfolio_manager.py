@@ -98,6 +98,13 @@ class PortfolioManager:
                 current = await self._redis.get("portfolio:balance")
                 self._balance = float(current) if current else float(manual)
                 logger.info("Restored manual balance override: ${:.2f}", self._balance)
+            else:
+                # Non-manual mode: restore last known balance from Redis so closed-trade
+                # PnL accumulates correctly across bot restarts (not reset to config default).
+                current = await self._redis.get("portfolio:balance")
+                if current and float(current) > 0:
+                    self._balance = float(current)
+                    logger.info("Restored portfolio balance from Redis: ${:.2f}", self._balance)
         except Exception as exc:
             logger.warning("Redis unavailable ({}), running in-memory mode", exc)
             # Close the partially-created connection so no sockets are leaked
@@ -305,7 +312,7 @@ class PortfolioManager:
 
         pnls = [t.pnl_usdt for t in trades if t.pnl_usdt is not None]
         wins = [p for p in pnls if p > 0]
-        losses = [p for p in pnls if p <= 0]
+        losses = [p for p in pnls if p < 0]   # exclude break-even (pnl=0) from loss count
 
         win_rate = len(wins) / len(pnls) * 100
         gross_profit = sum(wins) if wins else 0.0

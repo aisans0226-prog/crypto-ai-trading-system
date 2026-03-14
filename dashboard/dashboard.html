@@ -510,7 +510,7 @@ header{height:var(--hdr);background:rgba(8,15,27,.95);backdrop-filter:blur(20px)
         <span id="bal-manual-badge" class="bal-manual-badge" style="display:none">MANUAL</span>
       </div>
       <div class="sv pos" id="s0">$--</div>
-      <div class="svc neu" id="bal-sub">Base $-- &nbsp;+&nbsp; Unreal $--</div>
+      <div class="svc neu" id="bal-sub">Wallet $-- &nbsp;|&nbsp; Unreal $--</div>
       <div class="bal-edit-form" id="bal-edit-form" style="display:none">
         <input type="number" id="bal-inp" step="1" min="1" placeholder="Balance (USDT)" onkeyup="if(event.key==='Enter')saveBal()" onkeydown="if(event.key==='Escape')cancelBal()"/>
         <div class="bal-edit-actions">
@@ -1434,7 +1434,7 @@ function cwS(){
         var _mBadge=document.getElementById('bal-manual-badge');
         if(_bsub&&(!_mBadge||_mBadge.style.display==='none')){
           var _us=Math.round(_upnl*100)/100;
-          _bsub.innerHTML='Base <span style="color:var(--txt)">$'+_lastBalance.toFixed(2)+'</span>&nbsp;&nbsp;|&nbsp;&nbsp;Unreal <span class="'+(_us>=0?'pos':'neg')+'">'+((_us>=0?'+':'')+'$'+Math.abs(_us).toFixed(2))+'</span>';
+          _bsub.innerHTML='Wallet <span style="color:var(--txt)">$'+_lastBalance.toFixed(2)+'</span>&nbsp;&nbsp;|&nbsp;&nbsp;Unreal <span class="'+(_us>=0?'pos':'neg')+'">'+((_us>=0?'+':'')+'$'+Math.abs(_us).toFixed(2))+'</span>';
         }
       }
       var tsEl=document.getElementById('pos-live-ts');
@@ -1544,7 +1544,7 @@ function uSt(d){
       balSub.innerHTML='Manual&nbsp;+&nbsp;PnL:&nbsp;<span class="'+(tp>=0?'pos':'neg')+'">'+(tp>=0?'+':'')+'$'+fm(Math.abs(tp))+'</span>';
     } else {
       var us=Math.round(upnl*100)/100;
-      balSub.innerHTML='Base <span style="color:var(--txt)">$'+fm(d.balance)+'</span>&nbsp;&nbsp;|&nbsp;&nbsp;Unreal <span class="'+(us>=0?'pos':'neg')+'">'+(us>=0?'+':'')+'$'+fm(Math.abs(us))+'</span>';
+      balSub.innerHTML='Wallet <span style="color:var(--txt)">$'+fm(d.balance)+'</span>&nbsp;&nbsp;|&nbsp;&nbsp;Unreal <span class="'+(us>=0?'pos':'neg')+'">'+(us>=0?'+':'')+'$'+fm(Math.abs(us))+'</span>';
     }
   }
   var dp=d.daily_pnl||0;
