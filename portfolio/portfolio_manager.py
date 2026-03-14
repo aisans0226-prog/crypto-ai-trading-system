@@ -140,6 +140,7 @@ class PortfolioManager:
                 "exchange": t.exchange,
                 "order_id": t.order_id or "",
                 "signal_score": t.signal_score,
+                "strategy_name": t.strategy_name,
                 # Persist open timestamp so _position_meta can be restored after restart
                 "opened_at": t.opened_at.timestamp() if t.opened_at else None,
             }

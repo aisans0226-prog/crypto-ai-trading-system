@@ -278,6 +278,26 @@ async def _enrich_positions(positions: Dict[str, dict], prices: Optional[dict] =
         else:
             pos["rr_live"] = 0.0
 
+        # --- Live fee estimates for open position ---
+        taker_rate     = getattr(settings, "taker_fee_pct", 0.06) / 100.0
+        taker_fee_usdt = round(size * 2 * taker_rate, 4)   # round-trip: entry + future exit
+
+        opened_at_ts = pos.get("opened_at")                # unix timestamp (seconds)
+        hours_held   = 0.0
+        if opened_at_ts:
+            hours_held = max(0.0, (datetime.utcnow().timestamp() - float(opened_at_ts)) / 3600.0)
+
+        # Conservative estimate: budgeted max rate × elapsed 8-h periods
+        fund_rate_8h      = getattr(settings, "max_funding_rate_pct", 0.10) / 100.0
+        funding_fee_est   = round(size * fund_rate_8h * (hours_held / 8.0), 4)
+
+        net_pnl = upnl - taker_fee_usdt - funding_fee_est
+        pos["taker_fee_usdt"]       = taker_fee_usdt
+        pos["funding_fee_est_usdt"] = funding_fee_est
+        pos["net_pnl_usdt"]         = round(net_pnl, 2)
+        pos["net_pnl_pct"]          = round(net_pnl / margin * 100, 2) if margin else 0.0
+        pos["hours_held"]           = round(hours_held, 2)
+
 
 @app.get("/api/portfolio")
 async def get_portfolio():

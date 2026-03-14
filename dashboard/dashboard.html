@@ -810,10 +810,14 @@ header{height:var(--hdr);background:rgba(8,15,27,.95);backdrop-filter:blur(20px)
         <thead><tr>
           <th>Symbol</th><th>Dir</th><th>Lev</th><th>Entry</th><th>Current <span class="live-dot"></span></th><th>Unreal. PnL / ROE%</th>
           <th>SL</th><th>SL Dist%</th><th>TP</th><th>TP Dist%</th>
-          <th>Liq Est.</th><th>R:R Live</th><th>Time Open</th><th>Size (USDT)</th><th>Score</th><th>Exchange</th><th>Action</th>
+          <th>Liq Est.</th><th>R:R Live</th><th>Time Open</th><th>Size (USDT)</th>
+          <th title="Estimated round-trip taker fee">Taker Fee</th>
+          <th title="Estimated funding fee accrued (config max rate × hours held)">Funding Est.</th>
+          <th title="Unrealized PnL minus taker + funding fees">Net PnL / ROE%</th>
+          <th>Strategy</th><th>Score</th><th>Exchange</th><th>Action</th>
         </tr></thead>
         <tbody id="ttb">
-          <tr><td colspan="17" style="text-align:center;color:var(--mut);padding:18px">No open positions</td></tr>
+          <tr><td colspan="21" style="text-align:center;color:var(--mut);padding:18px">No open positions</td></tr>
         </tbody>
       </table>
     </div>
@@ -1550,6 +1554,11 @@ function cwS(){
                 var _upnl2=_p.direction==='LONG'?(_cp_new-_entry)*_qty:(_entry-_cp_new)*_qty;
                 _p.unrealized_pnl_usdt=Math.round(_upnl2*100)/100;
                 _p.unrealized_pnl_pct=_mg?Math.round(_upnl2/_mg*10000)/100:0;
+                // Recompute net PnL (fees pinned from last server push)
+                var _tf=_p.taker_fee_usdt||0,_ff=_p.funding_fee_est_usdt||0;
+                var _np=_upnl2-_tf-_ff;
+                _p.net_pnl_usdt=Math.round(_np*100)/100;
+                _p.net_pnl_pct=_mg?Math.round(_np/_mg*10000)/100:0;
                 // Update live R:R
                 var _sl=_p.stop_loss||0,_tp=_p.take_profit||0;
                 if(_sl&&_tp){
@@ -2175,12 +2184,19 @@ function rPos(pos, exp, animate) {
       var liqWarn=liqP&&cpv&&Math.abs(cpv-liqP)/cpv<0.2;
       var rr=p.rr_live;
       var rrStr=rr!=null&&rr>0?rr.toFixed(2)+':1':'--';
+      // Fee & net PnL for mobile
+      var tkFee=p.taker_fee_usdt!=null?p.taker_fee_usdt:null;
+      var fundEst=p.funding_fee_est_usdt!=null?p.funding_fee_est_usdt:null;
+      var netPnl=p.net_pnl_usdt!=null?p.net_pnl_usdt:null;
+      var netPct=p.net_pnl_pct!=null?p.net_pnl_pct:null;
+      var stratBadge=p.strategy_name?'<span style="font-size:.6rem;background:rgba(88,101,242,.15);color:#818cf8;padding:2px 4px;border-radius:3px;margin-left:4px">'+p.strategy_name.replace('_',' ')+'</span>':'';
       return '<div class="mtc" style="border:'+bdr+'">'
         +'<div class="mtc-top">'
-          +'<div style="display:flex;align-items:center;gap:8px">'
+          +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
             +'<span class="mtc-sym">'+s.replace('USDT','')+'<span style="font-size:.72rem;color:var(--mut);font-weight:400">/USDT</span></span>'
             +'<span class="sdir s'+dir+'">'+p.direction+'</span>'
             +'<span style="font-size:.65rem;background:rgba(59,130,246,.15);color:var(--a2);padding:1px 5px;border-radius:4px">'+lev+'x</span>'
+            +stratBadge
           +'</div>'
           +'<span class="mtc-pnl '+pnlCls+'">'+pnlStr+'</span>'
         +'</div>'
@@ -2194,6 +2210,13 @@ function rPos(pos, exp, animate) {
           +'<div class="mtc-c"><span class="mtc-l">TP</span><span class="mtc-v pos">$'+(p.take_profit||0).toFixed(4)+'<br><span style="font-size:.63rem">▲'+tpDist+'</span></span></div>'
           +'<div class="mtc-c"><span class="mtc-l">R:R Live</span><span class="mtc-v" style="color:'+(rr>=1.5?'var(--grn)':rr>0?'var(--yel)':'var(--red)')+'">'+rrStr+'</span></div>'
         +'</div>'
+        +(tkFee!=null||fundEst!=null?
+          '<div style="margin-top:6px;padding:5px 7px;background:rgba(0,0,0,.25);border-radius:6px;font-size:.66rem;display:flex;justify-content:space-between;align-items:center">'
+            +'<span><span style="color:var(--mut)">Taker: </span><span class="neg">-$'+(tkFee||0).toFixed(4)+'</span></span>'
+            +'<span><span style="color:var(--mut)">Funding Est: </span><span class="neg">-$'+(fundEst||0).toFixed(4)+'</span></span>'
+            +(netPnl!=null?'<span><span style="color:var(--mut)">Net: </span><span class="'+(netPnl>=0?'pos':'neg')+'">'+(netPnl>=0?'+':'-')+'$'+Math.abs(netPnl).toFixed(2)+(netPct!=null?' ('+(netPct>=0?'+':'')+netPct.toFixed(1)+'%)':'')+'</span></span>':'')
+          +'</div>'
+        :'')
         +'<div style="margin-top:7px;padding-top:7px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;font-size:.68rem">'
           +'<span style="color:var(--mut)">Size: $'+(p.position_size_usdt||0).toFixed(0)+'</span>'
           +'<span style="color:'+(liqWarn?'var(--yel)':'var(--mut)')+'">Liq: '+liqStr+'</span>'
@@ -2237,6 +2260,17 @@ function rPos(pos, exp, animate) {
     // Live R:R
     var rr=p.rr_live;
     var rrDisp=rr!=null&&rr>0?'<span class="'+(rr>=2?'rr-good':rr>=1?'rr-ok':'rr-bad')+'">'+rr.toFixed(2)+':1</span>':'<span class="rr-bad">--</span>';
+    // Fee & net PnL columns
+    var tkFee=p.taker_fee_usdt!=null?p.taker_fee_usdt:null;
+    var fundEst=p.funding_fee_est_usdt!=null?p.funding_fee_est_usdt:null;
+    var netPnl=p.net_pnl_usdt!=null?p.net_pnl_usdt:null;
+    var netPct=p.net_pnl_pct!=null?p.net_pnl_pct:null;
+    var tkFeeStr=tkFee!=null?'-$'+tkFee.toFixed(4):'--';
+    var fundEstStr=fundEst!=null?'-$'+fundEst.toFixed(4):'--';
+    var netPnlStr=netPnl!=null?(netPnl>=0?'+$':'-$')+Math.abs(netPnl).toFixed(2):'--';
+    var netRoeStr=netPct!=null?'<br><span style="font-size:.67rem;opacity:.85">'+(netPct>=0?'+':'')+netPct.toFixed(2)+'% ROE</span>':'';
+    var netCls=netPnl!=null?(netPnl>=0?'tp':'tn'):'';
+    var stratDisp=p.strategy_name?'<span style="font-size:.62rem;background:rgba(88,101,242,.15);color:#818cf8;padding:2px 5px;border-radius:3px">'+p.strategy_name.replace('_',' ')+'</span>':'--';
     return '<tr><td class="tbls">'+s+'</td>'
       +'<td><span class="sdir s'+dir+'">'+p.direction+'</span></td>'
       +'<td style="color:var(--a2);font-weight:600">'+lev+'x</td>'
@@ -2251,10 +2285,14 @@ function rPos(pos, exp, animate) {
       +'<td>'+rrDisp+'</td>'
       +'<td style="color:var(--mut);font-size:.75rem">'+timeOpen+'</td>'
       +'<td>$'+(p.position_size_usdt||0).toFixed(2)+'</td>'
+      +'<td class="tn" style="font-size:.72rem">'+tkFeeStr+'</td>'
+      +'<td class="tn" style="font-size:.72rem">'+fundEstStr+'</td>'
+      +'<td class="'+netCls+'" style="font-weight:700">'+netPnlStr+netRoeStr+'</td>'
+      +'<td>'+stratDisp+'</td>'
       +'<td>'+(p.signal_score||'--')+'</td>'
       +'<td>'+(p.exchange||'--')+'</td>'
       +'<td><button onclick="closePos(\''+s+'\')" style="padding:3px 9px;background:rgba(255,68,102,.15);color:var(--red);border:1px solid rgba(255,68,102,.4);border-radius:4px;font-size:.7rem;font-weight:700;cursor:pointer;white-space:nowrap">✕ Close</button></td></tr>';
-  }).join(''):'<tr><td colspan="17" style="text-align:center;color:var(--mut);padding:18px">No open positions</td></tr>';
+  }).join(''):'<tr><td colspan="21" style="text-align:center;color:var(--mut);padding:18px">No open positions</td></tr>';
 }
 
 function rPending(orders){
