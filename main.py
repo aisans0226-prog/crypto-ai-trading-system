@@ -1246,6 +1246,9 @@ class TradingSystem:
 
                 if hit_price:
                     pnl = (hit_price - entry) * qty if direction == "LONG" else (entry - hit_price) * qty
+                    # Deduct round-trip taker fee (entry + exit) to match live exchange behavior
+                    notional = pos_data.get("position_size_usdt") or (entry * qty)
+                    pnl -= notional * 2 * (settings.taker_fee_pct / 100.0)
                     await self._teardown_closed_position(symbol, hit_price, pnl)
                     outcome = "✅ TP hit" if pnl > 0 else "🛑 SL hit"
                     logger.info("[DRY RUN] {} {} PnL={:.2f} USDT", symbol, outcome, pnl)
@@ -1919,12 +1922,14 @@ class TradingSystem:
                 except Exception:
                     pass
         else:
-            # Dry-run: calculate PnL at current price
+            # Dry-run: calculate PnL at current price, deduct round-trip taker fee
             pnl = (
                 (current_price - entry) * quantity
                 if direction == "LONG"
                 else (entry - current_price) * quantity
             )
+            notional = pos_data.get("position_size_usdt") or (entry * quantity)
+            pnl -= notional * 2 * (settings.taker_fee_pct / 100.0)
 
         await self._teardown_closed_position(symbol, current_price, pnl, {"reason": reason})
         await self._alerts.send_text(

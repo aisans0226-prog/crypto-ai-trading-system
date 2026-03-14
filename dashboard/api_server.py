@@ -287,8 +287,10 @@ async def _enrich_positions(positions: Dict[str, dict], prices: Optional[dict] =
         if opened_at_ts:
             hours_held = max(0.0, (datetime.utcnow().timestamp() - float(opened_at_ts)) / 3600.0)
 
-        # Conservative estimate: budgeted max rate × elapsed 8-h periods
-        fund_rate_8h      = getattr(settings, "max_funding_rate_pct", 0.10) / 100.0
+        # Realistic estimate using the typical funding rate (Binance default ≈ 0.01% per 8 h).
+        # max_funding_rate_pct is intentionally kept for risk sizing only — using it here
+        # makes Net PnL look worse than reality and confuses traders monitoring live positions.
+        fund_rate_8h      = getattr(settings, "typical_funding_rate_pct", 0.01) / 100.0
         funding_fee_est   = round(size * fund_rate_8h * (hours_held / 8.0), 4)
 
         net_pnl = upnl - taker_fee_usdt - funding_fee_est

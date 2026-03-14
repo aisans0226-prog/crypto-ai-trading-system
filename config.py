@@ -84,7 +84,8 @@ class Settings(BaseSettings):
     #   funding_periods_estimate = number of 8 h periods to budget for
     #     (max_position_hold_hours=18 → ceil(18/8) = 3 periods)
     # The estimated funding cost is added to taker fees in the safety cap check.
-    max_funding_rate_pct: float = 0.10    # % per 8-h period (pessimistic; normal ≈ 0.01%)
+    max_funding_rate_pct: float = 0.10    # % per 8-h period (pessimistic; used for risk sizing)
+    typical_funding_rate_pct: float = 0.01 # % per 8-h period (realistic; used for Net PnL display)
     funding_periods_estimate: int = 3     # periods to budget for (matches 18 h hold limit)
 
     # ── Smart position exit controls ──────────────────────────────────────────

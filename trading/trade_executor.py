@@ -382,17 +382,26 @@ class BinanceExecutor:
         return 0.0
 
     async def get_recent_pnl(self, symbol: str) -> float:
+        """Return net realized PnL for the symbol over the past 24 h.
+
+        Fetches REALIZED_PNL (position settlement) AND COMMISSION (taker fees)
+        separately then sums them, because the /income endpoint splits these into
+        different incomeType entries.  COMMISSION values are already negative on
+        Binance, so summing gives the true net-of-fee realized PnL.
+        """
         try:
             start_time = int((time.time() - 86400) * 1000)
-            data = await self._get("/fapi/v1/income", {
-                "symbol":     symbol,
-                "incomeType": "REALIZED_PNL",
-                "startTime":  start_time,
-                "limit":      50,
-            })
-            if not isinstance(data, list):
-                return 0.0
-            return sum(float(r.get("income", 0)) for r in data)
+            total = 0.0
+            for income_type in ("REALIZED_PNL", "COMMISSION"):
+                data = await self._get("/fapi/v1/income", {
+                    "symbol":     symbol,
+                    "incomeType": income_type,
+                    "startTime":  start_time,
+                    "limit":      50,
+                })
+                if isinstance(data, list):
+                    total += sum(float(r.get("income", 0)) for r in data)
+            return total
         except Exception as exc:
             logger.debug("get_recent_pnl Binance error {}: {}", symbol, exc)
         return 0.0

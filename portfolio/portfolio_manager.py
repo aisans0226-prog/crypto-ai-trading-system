@@ -255,11 +255,17 @@ class PortfolioManager:
             await self._redis.set(
                 "portfolio:positions", json.dumps(self._open_positions)
             )
-        # Update equity balance immediately so metrics reflect realized PnL
-        self._balance = max(0.0, self._balance + pnl)
+        # Update equity balance: pnl is already net of taker fees (from exchange API
+        # or dry-run calculation).  Funding fees are charged separately by the exchange
+        # so we subtract them here to keep the internal balance consistent with reality.
+        net_change = pnl - funding_fee
+        self._balance = max(0.0, self._balance + net_change)
         if self._redis:
             await self._redis.set("portfolio:balance", self._balance)
-        logger.info("Position closed: {} PnL={:.2f} | balance={:.2f}", symbol, pnl, self._balance)
+        logger.info(
+            "Position closed: {} PnL={:.2f} funding={:.4f} net={:.2f} | balance={:.2f}",
+            symbol, pnl, funding_fee, net_change, self._balance,
+        )
         # Persist daily performance snapshot so /api/performance-history has fresh data
         try:
             await self.save_performance_snapshot()
@@ -311,11 +317,18 @@ class PortfolioManager:
         if not trades:
             return base
 
-        pnls = [t.pnl_usdt for t in trades if t.pnl_usdt is not None]
-        wins = [p for p in pnls if p > 0]
-        losses = [p for p in pnls if p < 0]   # exclude break-even (pnl=0) from loss count
+        # net_pnl per trade = realized pnl (after taker fees) minus estimated funding fees.
+        # pnl_usdt is already net of taker fees for both live (exchange API sums
+        # REALIZED_PNL + COMMISSION) and dry-run (taker fee deducted at close time).
+        # funding_fee_usdt is stored separately and subtracted here for accurate stats.
+        net_pnls = [
+            t.pnl_usdt - (t.funding_fee_usdt or 0.0)
+            for t in trades if t.pnl_usdt is not None
+        ]
+        wins = [p for p in net_pnls if p > 0]
+        losses = [p for p in net_pnls if p < 0]   # exclude break-even (pnl=0) from loss count
 
-        win_rate = len(wins) / len(pnls) * 100
+        win_rate = len(wins) / len(net_pnls) * 100
         gross_profit = sum(wins) if wins else 0.0
         gross_loss = abs(sum(losses)) if losses else 0.0
         # Cap at 99.99 when no losses (avoids JSON serialization of float('inf'))
@@ -324,7 +337,7 @@ class PortfolioManager:
         # Max drawdown — equity curve starts from initial balance, not 0
         # This correctly captures drawdown even when all trades are losing
         initial_balance = settings.account_balance_usdt
-        cumulative = [initial_balance + sum(pnls[:i+1]) for i in range(len(pnls))]
+        cumulative = [initial_balance + sum(net_pnls[:i+1]) for i in range(len(net_pnls))]
         peak = initial_balance
         max_dd = 0.0
         for val in cumulative:
@@ -336,7 +349,7 @@ class PortfolioManager:
         # Use UTC date to match UTC-stored closed_at timestamps
         today_utc = datetime.utcnow().date()
         daily_pnl = sum(
-            t.pnl_usdt for t in trades
+            t.pnl_usdt - (t.funding_fee_usdt or 0.0) for t in trades
             if t.closed_at and t.closed_at.date() == today_utc
         )
 
@@ -346,7 +359,7 @@ class PortfolioManager:
             key=lambda t: t.closed_at
         )[-30:]
         pnl_trend = [
-            {"label": t.symbol, "pnl": round(t.pnl_usdt, 2)}
+            {"label": t.symbol, "pnl": round(t.pnl_usdt - (t.funding_fee_usdt or 0.0), 2)}
             for t in recent_30
         ]
 
@@ -359,7 +372,7 @@ class PortfolioManager:
             "profit_factor": profit_factor,
             "max_drawdown_pct": round(max_dd, 2),
             "daily_pnl": round(daily_pnl, 2),
-            "total_pnl": round(sum(pnls), 2),
+            "total_pnl": round(sum(net_pnls), 2),
             "balance": self._balance,
             "pnl_trend": pnl_trend,
             "gross_profit": round(gross_profit, 2),
