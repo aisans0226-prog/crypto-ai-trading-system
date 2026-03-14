@@ -176,8 +176,8 @@ class Settings(BaseSettings):
     # ── Effective thresholds (auto-relaxed in training mode) ──────────────────
     @property
     def effective_signal_score_threshold(self) -> int:
-        """Gate score after ML+sentiment boost. In training mode: accept score ≥ 3."""
-        return 3 if self.training_mode else self.signal_score_threshold
+        """Gate score after ML+sentiment boost. In training mode: accept score ≥ 5 (quality filter)."""
+        return 5 if self.training_mode else self.signal_score_threshold
 
     @property
     def effective_watchlist_confirmations(self) -> int:
@@ -191,13 +191,13 @@ class Settings(BaseSettings):
 
     @property
     def effective_research_min_score(self) -> float:
-        """Research score gate (0–10). In training mode: 2.0 (nearly always passes)."""
-        return 2.0 if self.training_mode else self.research_min_score
+        """Research score gate (0–10). In training mode: 4.0 (meaningful quality gate)."""
+        return 4.0 if self.training_mode else self.research_min_score
 
     @property
     def effective_research_min_mtf_alignment(self) -> float:
-        """Fraction of TFs that must agree. In training mode: 0.0 (no gate)."""
-        return 0.0 if self.training_mode else self.research_min_mtf_alignment
+        """Fraction of TFs that must agree. In training mode: 0.33 (at least 1 of 3 TFs)."""
+        return 0.33 if self.training_mode else self.research_min_mtf_alignment
 
     @property
     def effective_min_ml_confidence(self) -> float:
@@ -206,13 +206,13 @@ class Settings(BaseSettings):
 
     @property
     def effective_max_daily_trades(self) -> int:
-        """Max trades per day. In training mode: 100 (effectively unlimited)."""
-        return 100 if self.training_mode else self.max_daily_trades
+        """Max trades per day. In training mode: 20 (balanced data collection)."""
+        return 20 if self.training_mode else self.max_daily_trades
 
     @property
     def effective_max_open_trades(self) -> int:
-        """Max simultaneous open positions. In training mode: 20."""
-        return 20 if self.training_mode else self.max_open_trades
+        """Max simultaneous open positions. In training mode: 8 (reduce concurrent risk)."""
+        return 8 if self.training_mode else self.max_open_trades
 
     @property
     def effective_max_position_hold_hours(self) -> float:

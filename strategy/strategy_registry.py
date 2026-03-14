@@ -67,6 +67,17 @@ class StrategyRegistry:
 
         candidates = []
         for strat in self._strategies:
+            # Auto-disable strategies with proven negative avg PnL (≥ 3 trades, avg < -1 USDT)
+            strat_stats = self._stats_cache.get(strat.NAME, {})
+            strat_trades = strat_stats.get("total_trades", 0)
+            strat_total_pnl = strat_stats.get("total_pnl", 0.0)
+            if strat_trades >= 3 and strat_total_pnl / strat_trades < -1.0:
+                logger.debug(
+                    "Skipping {} — negative avg PnL {:.2f} over {} trades",
+                    strat.NAME, strat_total_pnl / strat_trades, strat_trades,
+                )
+                continue
+
             try:
                 setup = strat.evaluate(symbol, df)
             except Exception as exc:
