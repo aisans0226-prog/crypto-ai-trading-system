@@ -1516,7 +1516,7 @@ function cwS(){
       // Update unrealized PnL stat card (s8) on dashboard regardless of active page
       var _upnl=Object.values(_livePositions).reduce(function(s,p){return s+(p.unrealized_pnl_usdt||0);},0);
       var _s8=document.getElementById('s8');
-      if(_s8){var _uv=Math.round(_upnl*100)/100;_s8.textContent=(_uv>=0?'+':'')+'$'+Math.abs(_uv).toFixed(2);_s8.className='sv '+(_uv>=0?'pos':'neg');}
+      if(_s8){var _uv=Math.round(_upnl*100)/100;_s8.textContent=(_uv>=0?'+':'-')+'$'+Math.abs(_uv).toFixed(2);_s8.className='sv '+(_uv>=0?'pos':'neg');}
       // Recalculate Total Equity (s0) in real-time: base balance + live unrealized PnL
       if(_lastBalance>0){
         var _eq=Math.round((_lastBalance+_upnl)*100)/100;
@@ -1525,7 +1525,7 @@ function cwS(){
         var _mBadge=document.getElementById('bal-manual-badge');
         if(_bsub&&(!_mBadge||_mBadge.style.display==='none')){
           var _us=Math.round(_upnl*100)/100;
-          _bsub.innerHTML='Wallet <span style="color:var(--txt)">$'+_lastBalance.toFixed(2)+'</span>&nbsp;&nbsp;|&nbsp;&nbsp;Unreal <span class="'+(_us>=0?'pos':'neg')+'">'+((_us>=0?'+':'')+'$'+Math.abs(_us).toFixed(2))+'</span>';
+          _bsub.innerHTML='Wallet <span style="color:var(--txt)">$'+_lastBalance.toFixed(2)+'</span>&nbsp;&nbsp;|&nbsp;&nbsp;Unreal <span class="'+(_us>=0?'pos':'neg')+'">'+((_us>=0?'+':'-')+'$'+Math.abs(_us).toFixed(2))+'</span>';
         }
       }
       var tsEl=document.getElementById('pos-live-ts');
@@ -1637,14 +1637,14 @@ function uSt(d){
   if(balSub){
     if(d.manual_balance_active){
       var tp=d.total_pnl||0;
-      balSub.innerHTML='Manual&nbsp;+&nbsp;PnL:&nbsp;<span class="'+(tp>=0?'pos':'neg')+'">'+(tp>=0?'+':'')+'$'+fm(Math.abs(tp))+'</span>';
+      balSub.innerHTML='Manual&nbsp;+&nbsp;PnL:&nbsp;<span class="'+(tp>=0?'pos':'neg')+'">'+(tp>=0?'+':'-')+'$'+fm(Math.abs(tp))+'</span>';
     } else {
       var us=Math.round(upnl*100)/100;
-      balSub.innerHTML='Wallet <span style="color:var(--txt)">$'+fm(d.balance)+'</span>&nbsp;&nbsp;|&nbsp;&nbsp;Unreal <span class="'+(us>=0?'pos':'neg')+'">'+(us>=0?'+':'')+'$'+fm(Math.abs(us))+'</span>';
+      balSub.innerHTML='Wallet <span style="color:var(--txt)">$'+fm(d.balance)+'</span>&nbsp;&nbsp;|&nbsp;&nbsp;Unreal <span class="'+(us>=0?'pos':'neg')+'">'+(us>=0?'+':'-')+'$'+fm(Math.abs(us))+'</span>';
     }
   }
   var dp=d.daily_pnl||0;
-  fe('s1',(dp>=0?'+':'')+'$'+fm(dp),(dp>=0?'pos':'neg'));
+  fe('s1',(dp>=0?'+':'-')+'$'+fm(Math.abs(dp)),(dp>=0?'pos':'neg'));
   fe('s2',fm(d.win_rate,1)+'%',(d.win_rate||0)>=50?'pos':'neg');
   var exp=d.risk_exposure||null;
   var maxOt=exp&&exp.max_open_trades?exp.max_open_trades:(d.max_open_trades||5);
@@ -1655,14 +1655,14 @@ function uSt(d){
   fe('s5','-'+fm(Math.abs(d.max_drawdown_pct||0),1)+'%','neg');
   // New cards
   var tp=d.total_pnl||0;
-  fe('s6',(tp>=0?'+':'')+'$'+fm(Math.abs(tp)),(tp>=0?'pos':'neg'));
+  fe('s6',(tp>=0?'+':'-')+'$'+fm(Math.abs(tp)),(tp>=0?'pos':'neg'));
   var dt=d.daily_trades!=null?d.daily_trades:'--';
   var maxDt=d.max_daily_trades||3;
   fe('s7',dt,'');
   var s7sub=document.getElementById('s7-sub');if(s7sub)s7sub.textContent='Max '+maxDt+' today';
   // s8 — total unrealized PnL
   var upnl=d.total_unrealized_pnl||0;
-  fe('s8',(upnl>=0?'+':'')+'$'+fm(Math.abs(upnl)),(upnl>=0?'pos':'neg'));
+  fe('s8',(upnl>=0?'+':'-')+'$'+fm(Math.abs(upnl)),(upnl>=0?'pos':'neg'));
 }
 
 // ── Balance manual override ──────────────────────────────────────────────
