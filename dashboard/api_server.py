@@ -104,6 +104,31 @@ async def broadcast(event: str, payload: dict) -> None:
             state.connected_ws.remove(ws)
 
 
+async def _realtime_loop() -> None:
+    """Background task: broadcast metrics + positions + bot_status every 5 s to all WS clients."""
+    while True:
+        await asyncio.sleep(5)
+        if not state.connected_ws or not state.portfolio_manager:
+            continue
+        try:
+            all_prices = await _fetch_all_prices()
+            metrics = await state.portfolio_manager.calculate_metrics()
+            exposure = await state.portfolio_manager.get_risk_exposure()
+            metrics["risk_exposure"] = exposure
+            positions = dict(await state.portfolio_manager.get_open_positions())
+            await _enrich_positions(positions, all_prices)
+            metrics["total_unrealized_pnl"] = round(
+                sum(p.get("unrealized_pnl_usdt", 0) for p in positions.values()), 2
+            )
+            await broadcast("metrics", metrics)
+            await broadcast("positions", {"positions": positions, "exposure": exposure})
+            await broadcast("bot_status", _make_bot_status_payload())
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug("realtime_loop error: {}", exc)
+
+
 @app.get("/health")
 async def health():
     """Deep health check — returns status per subsystem for process monitors."""
