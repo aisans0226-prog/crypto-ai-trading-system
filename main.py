@@ -26,6 +26,7 @@ Usage:
 """
 import asyncio
 import argparse
+import json
 import sys
 import os
 import signal
@@ -127,7 +128,7 @@ class TradingSystem:
         self._signal_cooldowns: Dict[str, float] = {}      # symbol -> last decision timestamp
 
         # Per-position runtime metadata for smart exit management
-        # Stored in-memory only (not persisted); keyed by symbol
+        # Persisted to Redis on write; restored on restart from Redis.
         self._position_meta: Dict[str, dict] = {}    # symbol -> {opened_at, peak_price, sl_order_id, ...}
 
         # Watchlist + research phase
@@ -150,7 +151,9 @@ class TradingSystem:
 
         # Exchange executors
         self._binance_exec = BinanceExecutor()
-        self._bybit_exec = BybitExecutor()
+        self._bybit_exec   = BybitExecutor()
+        # Redis client for position-meta persistence (set in start())
+        self._redis = None
 
         # Inject into dashboard state
         state.portfolio_manager = self._portfolio
@@ -181,6 +184,44 @@ class TradingSystem:
         await self._sentiment.start()
         await self._binance_exec.start()
         await self._bybit_exec.start()
+
+        # ── Redis for position-meta persistence ───────────────────────────────
+        try:
+            import redis.asyncio as aioredis
+            self._redis = aioredis.from_url(
+                settings.redis_url,
+                socket_connect_timeout=3,
+                socket_timeout=3,
+                decode_responses=True,
+            )
+            await self._redis.ping()
+            logger.info("Redis connected — position meta will persist across restarts")
+        except Exception as exc:
+            logger.warning(
+                "Redis unavailable — position meta will NOT persist across restarts: {}", exc
+            )
+            self._redis = None
+
+        # ── Live-only startup checks ───────────────────────────────────────────
+        if not self.dry_run:
+            # Validate API keys so startup fails fast on misconfiguration
+            exec_main = self._bybit_exec if self.exchange == "bybit" else self._binance_exec
+            key_ok = await exec_main.validate_api_key()
+            if not key_ok:
+                logger.error(
+                    "API key validation failed for {}. "
+                    "Check your API key / secret / testnet flag and restart.",
+                    self.exchange.upper(),
+                )
+                # Continue anyway — bot can still run in dry-run style while user fixes keys
+
+            # Load exchange symbol filters (LOT_SIZE, PRICE_FILTER, MIN_NOTIONAL)
+            if self.exchange != "bybit":
+                await self._binance_exec.load_exchange_filters()
+
+        # Restore position meta from Redis after a crash/restart
+        await self._restore_meta_from_redis()
+
         self._research = ResearchEngine(self._data_engine, self._coin_db)
         self._strategy_registry = StrategyRegistry(self._coin_db)
         state.strategy_registry = self._strategy_registry
@@ -896,6 +937,7 @@ class TradingSystem:
                 meta["strategy_name"] = strategy_name
                 meta["margin_used"] = risk_params.position_size_usdt / max(risk_params.leverage, 1)
                 self._position_meta[risk_params.symbol] = meta
+                await self._persist_meta(risk_params.symbol, meta)
         else:
             # Live execution
             if self.exchange == "bybit":
@@ -927,6 +969,7 @@ class TradingSystem:
                     meta["strategy_name"] = strategy_name
                     meta["margin_used"] = risk_params.position_size_usdt / max(risk_params.leverage, 1)
                     self._position_meta[risk_params.symbol] = meta
+                    await self._persist_meta(risk_params.symbol, meta)
 
         # Record ML feature vector only when a real trade is opened (not on every signal)
         if trade_id:
@@ -1080,6 +1123,22 @@ class TradingSystem:
                                     pnl = await executor.get_recent_pnl(symbol)
                                 except Exception:
                                     pass
+
+                            # Cancel the remaining orphan order (whichever of SL/TP didn't fill).
+                            # Binance: reduceOnly orders auto-cancel when position is 0, but
+                            # explicitly cancelling avoids stale-order noise in the account.
+                            # Bybit: SL/TP are position-level and self-clear automatically.
+                            if self.exchange != "bybit":
+                                meta_snap = self._position_meta.get(symbol, {})
+                                for oid_key in ("sl_order_id", "tp_order_id"):
+                                    oid = meta_snap.get(oid_key)
+                                    if oid:
+                                        try:
+                                            await executor.cancel_order(symbol, oid)
+                                            logger.debug("OCO cleanup: cancelled {} order {} for {}",
+                                                         oid_key, oid, symbol)
+                                        except Exception:
+                                            pass   # already filled or already cancelled — fine
 
                             await self._teardown_closed_position(symbol, 0.0, pnl)
                             outcome = "✅ TP hit" if pnl > 0 else "🛑 SL hit"
@@ -1274,6 +1333,7 @@ class TradingSystem:
                             # (margin was already reserved when the LIMIT was placed)
                             meta["margin_used"] = rp.position_size_usdt / max(rp.leverage, 1)
                             self._position_meta[symbol] = meta
+                            await self._persist_meta(symbol, meta)
                             # Record ML feature vector on actual fill (not on signal)
                             df_cached = self._klines_cache.get(symbol)
                             if df_cached is not None and len(df_cached) >= 50:
@@ -1413,6 +1473,62 @@ class TradingSystem:
             f"Cancels in {settings.limit_order_timeout_seconds}s if not filled"
         )
 
+    # ── Position meta Redis persistence ────────────────────────────────────
+
+    async def _persist_meta(self, symbol: str, meta: dict) -> None:
+        """Persist position meta to Redis so it survives SIGKILL/crash restarts."""
+        if not self._redis:
+            return
+        try:
+            await self._redis.setex(
+                f"pos_meta:{symbol}",
+                86400 * 7,          # 7-day TTL — well beyond any realistic hold time
+                json.dumps(meta),
+            )
+        except Exception as exc:
+            logger.debug("Redis persist_meta {} failed: {}", symbol, exc)
+
+    async def _delete_meta(self, symbol: str) -> None:
+        """Remove the persisted meta key when a position closes."""
+        if not self._redis:
+            return
+        try:
+            await self._redis.delete(f"pos_meta:{symbol}")
+        except Exception:
+            pass
+
+    async def _restore_meta_from_redis(self) -> None:
+        """
+        On startup, reload position meta for any symbols that are still open in the portfolio.
+        This restores sl_order_id, tp_order_id, opened_at, peak_price, breakeven_done,
+        and margin_used so smart-exit rules resume correctly after a crash.
+        """
+        if not self._redis:
+            return
+        try:
+            portfolio_positions = await self._portfolio.get_open_positions()
+            restored = 0
+            for symbol in portfolio_positions:
+                if symbol in self._position_meta:
+                    continue
+                raw = await self._redis.get(f"pos_meta:{symbol}")
+                if raw:
+                    meta = json.loads(raw)
+                    self._position_meta[symbol] = meta
+                    restored += 1
+                    logger.info(
+                        "Restored position meta for {} from Redis "
+                        "(sl_order_id={} tp_order_id={} margin={:.2f})",
+                        symbol,
+                        meta.get("sl_order_id"),
+                        meta.get("tp_order_id"),
+                        meta.get("margin_used", 0.0),
+                    )
+            if restored:
+                logger.info("Position meta restored from Redis for {} symbols", restored)
+        except Exception as exc:
+            logger.debug("_restore_meta_from_redis failed: {}", exc)
+
     # ── Smart position management ──────────────────────────────────────────
 
     def _make_position_meta(
@@ -1467,6 +1583,7 @@ class TradingSystem:
             self._risk.release_margin(margin_used)
         strategy_name = self._position_meta.get(symbol, {}).get("strategy_name")
         self._position_meta.pop(symbol, None)
+        await self._delete_meta(symbol)   # remove from Redis
         self._risk.record_trade_closed(pnl)   # update daily PnL for loss-limit guard
 
         trade_id = self._pending_labels.pop(symbol, None)

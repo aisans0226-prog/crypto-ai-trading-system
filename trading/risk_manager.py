@@ -327,6 +327,12 @@ class RiskManager:
         )
         return params
 
-    def adjust_sl_to_breakeven(self, entry: float) -> float:
-        """Move SL to entry after partial profit realised."""
-        return entry
+    def adjust_sl_to_breakeven(self, entry: float, direction: str = "LONG") -> float:
+        """
+        Move SL to breakeven with a small protective buffer (+0.1% for LONG, -0.1% for SHORT).
+        This matches the inline logic used in _manage_open_position.
+        """
+        buffer = entry * 0.001   # 0.1% buffer so the trade is closed slightly in profit
+        if direction == "SHORT":
+            return round(entry - buffer, 8)
+        return round(entry + buffer, 8)
