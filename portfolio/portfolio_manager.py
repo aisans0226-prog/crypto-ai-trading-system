@@ -219,14 +219,19 @@ class PortfolioManager:
     async def close_position(
         self, symbol: str, exit_price: float, pnl: float, funding_fee: float = 0.0
     ) -> None:
+        # Use the specific trade_id from in-memory position to avoid closing duplicate
+        # DB records if the same symbol was opened twice (can happen in training mode).
+        trade_id = self._open_positions.get(symbol, {}).get("id")
         async with self._session_factory() as session:
             from sqlalchemy import update
+            where_clause = (
+                [TradeRecord.id == trade_id, TradeRecord.status == "open"]
+                if trade_id
+                else [TradeRecord.symbol == symbol, TradeRecord.status == "open"]
+            )
             await session.execute(
                 update(TradeRecord)
-                .where(
-                    TradeRecord.symbol == symbol,
-                    TradeRecord.status == "open",
-                )
+                .where(*where_clause)
                 .values(
                     exit_price=exit_price,
                     pnl_usdt=pnl,

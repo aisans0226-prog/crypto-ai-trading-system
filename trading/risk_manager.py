@@ -12,7 +12,7 @@ Rules enforced:
   ✓ Margin tracking: prevents over-allocation across concurrent positions
 """
 from dataclasses import dataclass
-from datetime import date
+from datetime import datetime, date
 from typing import Optional
 from loguru import logger
 
@@ -43,7 +43,7 @@ class RiskManager:
         self._account_balance: float = settings.account_balance_usdt
         self._used_margin: float = 0.0    # margin committed to open/pending positions
         self._daily_trades: int = 0
-        self._daily_date: date = date.today()
+        self._daily_date: date = datetime.utcnow().date()
         self._daily_pnl: float = 0.0      # realized PnL for today (resets each UTC day)
 
     # ── Public ────────────────────────────────────────────────────────────
@@ -66,7 +66,7 @@ class RiskManager:
         Does NOT change _account_balance — that is re-synced from the exchange."""
         self._daily_trades = 0
         self._daily_pnl = 0.0
-        self._daily_date = date.today()
+        self._daily_date = datetime.utcnow().date()
         self._used_margin = 0.0
         self._open_trades = 0
         logger.info("RiskManager: all runtime counters reset")
@@ -83,7 +83,7 @@ class RiskManager:
         self._open_trades = count
 
     def _reset_daily_if_needed(self) -> None:
-        today = date.today()
+        today = datetime.utcnow().date()   # always UTC to match portfolio_manager
         if today != self._daily_date:
             self._daily_trades = 0
             self._daily_pnl = 0.0
@@ -263,7 +263,7 @@ class RiskManager:
         estimated_funding_usdt = (
             position_size_usdt
             * (settings.max_funding_rate_pct / 100.0)
-            * settings.funding_periods_estimate
+            * settings.effective_funding_periods_estimate
         )
 
         total_fees_usdt = round_trip_fee_usdt + estimated_funding_usdt

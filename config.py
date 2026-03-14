@@ -230,5 +230,12 @@ class Settings(BaseSettings):
         Training mode uses 50 to keep each scan cycle under ~60 seconds."""
         return 50 if self.training_mode else self.max_signals_per_scan
 
+    @property
+    def effective_funding_periods_estimate(self) -> int:
+        """Number of 8h funding periods to budget for.
+        Training mode hold = 4h (< 1 period), so budget 1 period max.
+        Production hold = 18h → 3 periods (ceil(18/8) = 3)."""
+        return 1 if self.training_mode else self.funding_periods_estimate
+
 
 settings = Settings()

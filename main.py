@@ -889,6 +889,7 @@ class TradingSystem:
                 "position_size_usdt": risk_params.position_size_usdt,
                 "exchange":         "dry_run",
                 "signal_score":     signal.score,
+                "strategy_name":    strategy_name,
             })
             if trade_id:
                 meta = self._make_position_meta(risk_params.entry_price)
@@ -915,6 +916,7 @@ class TradingSystem:
                     "exchange":         self.exchange,
                     "order_id":         str(result.get("order_id", "")),
                     "signal_score":     signal.score,
+                    "strategy_name":    strategy_name,
                 })
                 if trade_id:
                     meta = self._make_position_meta(
@@ -1090,6 +1092,11 @@ class TradingSystem:
                             # Position still open — run smart exit checks
                             ticker = self._cache.tickers.get(symbol, {})
                             current_price = float(ticker.get("c", 0))
+                            # Fallback to klines cache if WS ticker not yet available
+                            if current_price <= 0:
+                                df = self._klines_cache.get(symbol)
+                                if df is not None and len(df) > 0:
+                                    current_price = float(df["close"].iloc[-1])
                             if current_price > 0:
                                 await self._manage_open_position(
                                     symbol, pos_data, executor, current_price
@@ -1245,7 +1252,7 @@ class TradingSystem:
                         trade_id = await self._portfolio.open_position({
                             "symbol":             rp.symbol,
                             "direction":          rp.direction,
-                            "entry_price":        pending.limit_price if pending.limit_price > 0 else rp.entry_price,
+                            "entry_price":        rp.entry_price,  # use signal price, not limit_price (fill may differ)
                             "stop_loss":          rp.stop_loss,
                             "take_profit":        rp.take_profit,
                             "quantity":           rp.quantity,
@@ -1254,6 +1261,7 @@ class TradingSystem:
                             "exchange":           "dry_run" if self.dry_run else self.exchange,
                             "order_id":           pending.order_id,
                             "signal_score":       pending.signal.score,
+                            "strategy_name":      pending.strategy_name,
                         })
                         if trade_id:
                             meta = self._make_position_meta(
@@ -1583,27 +1591,31 @@ class TradingSystem:
 
             if direction == "LONG":
                 trail_sl = round(peak * (1 - trail_dist), 8)
-                if sl > 0 and trail_sl > sl * (1 + min_move):
+                # Use percentage improvement check to avoid precision issues with large prices
+                improvement_pct = (trail_sl - sl) / sl * 100 if sl > 0 else 0
+                if sl > 0 and trail_sl > sl and improvement_pct >= settings.trailing_stop_min_move_pct:
                     await self._update_sl_on_exchange(
                         symbol, direction, quantity, trail_sl, meta, executor
                     )
                     pos_data["stop_loss"] = trail_sl
                     await self._portfolio.update_position_field(symbol, "stop_loss", trail_sl)
                     logger.info(
-                        "{} trailing SL: {:.6f} → {:.6f} (peak {:.6f})",
-                        symbol, sl, trail_sl, peak,
+                        "{} trailing SL: {:.6f} → {:.6f} (peak {:.6f}, +{:.3f}%)",
+                        symbol, sl, trail_sl, peak, improvement_pct,
                     )
             else:
                 trail_sl = round(peak * (1 + trail_dist), 8)
-                if sl > 0 and trail_sl < sl * (1 - min_move):
+                # Use percentage improvement check to avoid precision issues with large prices
+                improvement_pct = (sl - trail_sl) / sl * 100 if sl > 0 else 0
+                if sl > 0 and trail_sl < sl and improvement_pct >= settings.trailing_stop_min_move_pct:
                     await self._update_sl_on_exchange(
                         symbol, direction, quantity, trail_sl, meta, executor
                     )
                     pos_data["stop_loss"] = trail_sl
                     await self._portfolio.update_position_field(symbol, "stop_loss", trail_sl)
                     logger.info(
-                        "{} trailing SL: {:.6f} → {:.6f} (peak {:.6f})",
-                        symbol, sl, trail_sl, peak,
+                        "{} trailing SL: {:.6f} → {:.6f} (peak {:.6f}, +{:.3f}%)",
+                        symbol, sl, trail_sl, peak, improvement_pct,
                     )
 
     async def _update_sl_on_exchange(
@@ -1648,11 +1660,14 @@ class TradingSystem:
         pnl       = 0.0
 
         if executor is not None:
+            close_error = None
             try:
                 await executor.close_position_market(symbol, direction, quantity)
             except Exception as exc:
-                logger.error("Force-close market order failed {}: {}", symbol, exc)
-                return
+                # Log but do NOT return — teardown must still run to clean up bot state.
+                # If the close failed on exchange, the next monitor cycle will retry.
+                close_error = exc
+                logger.error("Force-close market order failed {}: {} — continuing teardown", symbol, exc)
 
             for key in ("sl_order_id", "tp_order_id"):
                 oid = meta.get(key)
