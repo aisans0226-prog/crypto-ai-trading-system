@@ -139,14 +139,14 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
 /* overlay */
 #ov{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:99}
 /* ── Bottom Navigation Bar ──────────────────────────────────────── */
-#bnav{display:none;position:fixed;bottom:0;left:0;right:0;height:58px;background:var(--bg2);border-top:1px solid var(--border);z-index:200;grid-template-columns:repeat(5,1fr);align-items:stretch}
-#bnav a{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;color:var(--mut);text-decoration:none;cursor:pointer;padding:5px 2px;transition:.15s;border-top:2px solid transparent;font-size:.59rem;font-weight:600;-webkit-tap-highlight-color:transparent;user-select:none}
+#bnav{display:none;position:fixed;bottom:0;left:0;right:0;height:auto;min-height:58px;background:var(--bg2);border-top:1px solid var(--border);z-index:200;grid-template-columns:repeat(5,1fr);align-items:stretch;padding-bottom:env(safe-area-inset-bottom,0);-webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px)}
+#bnav a{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;color:var(--mut);text-decoration:none;cursor:pointer;padding:8px 4px 6px;transition:.15s;border-top:2px solid transparent;font-size:.6rem;font-weight:600;-webkit-tap-highlight-color:transparent;user-select:none;min-height:52px}
 #bnav a.ac{color:var(--accent);border-top-color:var(--accent)}
-#bnav a svg{width:20px;height:20px}
+#bnav a svg{width:21px;height:21px}
 /* ── More Drawer ─────────────────────────────────────────────────── */
 #mov{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:300}
 #mov.show{display:block}
-#mdr{position:fixed;bottom:0;left:0;right:0;background:var(--bg2);border-top:1px solid var(--border);border-radius:18px 18px 0 0;z-index:310;transform:translateY(100%);transition:transform .28s cubic-bezier(.4,0,.2,1);padding-bottom:env(safe-area-inset-bottom,0)}
+#mdr{position:fixed;bottom:0;left:0;right:0;background:var(--bg2);border-top:1px solid var(--border);border-radius:18px 18px 0 0;z-index:310;transform:translateY(100%);transition:transform .28s cubic-bezier(.4,0,.2,1);padding-bottom:env(safe-area-inset-bottom,0);max-height:82vh;overflow-y:auto}
 #mdr.open{transform:none}
 .mdrh{width:36px;height:4px;background:var(--border);border-radius:2px;margin:10px auto 4px}
 .mdrs{font-size:.62rem;color:var(--mut);text-transform:uppercase;letter-spacing:.08em;padding:10px 20px 2px}
@@ -157,7 +157,7 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
 /* ── Mobile Trade Cards ──────────────────────────────────────────── */
 #mob-hide-tbl{}
 #mob-tc{display:none}
-.mtc{background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:13px;margin-bottom:10px}
+.mtc{background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:13px;margin-bottom:10px;transition:border-color .2s}
 .mtc-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
 .mtc-sym{font-weight:700;font-size:.95rem}
 .mtc-pnl{font-size:.88rem;font-weight:700}
@@ -165,37 +165,128 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
 .mtc-c{display:flex;flex-direction:column;gap:2px;padding:6px 8px;background:var(--card);border-radius:7px}
 .mtc-l{font-size:.58rem;color:var(--mut);text-transform:uppercase;letter-spacing:.04em}
 .mtc-v{font-size:.78rem;font-weight:600}
+/* Scrollable overflow containers on mobile */
+.tbl-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
 /* ── Mobile media queries ────────────────────────────────────────── */
 @media(max-width:768px){
+  /* Sidebar: slide off-screen, bottom nav takes over */
   #sb{transform:translateX(-100%)}
   #sb.open{transform:none}
   #mn{margin-left:0}
   #mbtn{display:none !important}
   #ov.show{display:block}
   #bnav{display:grid}
-  #ct{padding:14px 14px 76px}
+
+  /* Main content: pad bottom for bottom nav + safe area */
+  #ct{padding:12px 12px calc(80px + env(safe-area-inset-bottom,0))}
+
+  /* Header: compact */
+  header{padding:0 12px;height:52px}
+  .ptl{font-size:.88rem}
+  .hr2{gap:6px}
+  .hr2 .btn.bo{display:none}
+  .sbg{padding:3px 8px;font-size:.68rem}
+
+  /* Stat cards: 2-column on tablet/phone */
+  .sg{grid-template-columns:repeat(2,1fr);gap:9px;margin-bottom:12px}
+  .sc{padding:12px 11px}
+  .sl{font-size:.6rem;margin-bottom:5px}
+  .sv{font-size:1.3rem}
+  .svc{font-size:.63rem;margin-top:4px}
+
+  /* Bot Status Panel → compact 3-column grid */
+  .bsp{display:grid !important;grid-template-columns:repeat(3,1fr);overflow:hidden;border-radius:var(--r)}
+  .bsi{flex-direction:column !important;justify-content:center;border-right:none !important;border-bottom:1px solid var(--border);padding:9px 10px;gap:2px}
+  .bsi:nth-last-child(2){grid-column:1/-1}
+  .bsi:last-child{grid-column:1/-1;flex-direction:row !important;align-items:center;justify-content:center;gap:8px;padding:10px 14px;border-bottom:none;margin-left:0}
+  .bsl{font-size:.55rem;white-space:normal}
+  .bsv{font-size:.76rem}
+
+  /* Layout grids: single-column stack */
   .cg{grid-template-columns:1fr}
   .tc{grid-template-columns:1fr}
-  .sg{grid-template-columns:repeat(2,1fr)}
-  #hm{grid-template-columns:repeat(auto-fill,minmax(72px,1fr))}
-  .uc{flex-direction:column;align-items:flex-start;gap:7px}
-  header{padding:0 14px}
-  .hr2 .btn.bo{display:none}
-  #str-grid{grid-template-columns:1fr !important}
-  #mob-hide-tbl{display:none}
-  #mob-tc{display:block}
-  .cw{height:185px}
-  .cws{height:155px}
+
+  /* Charts */
+  .cw{height:178px}
+  .cws{height:148px}
+  .cwm{height:160px}
+
+  /* Heatmap: smaller tiles */
+  #hm{grid-template-columns:repeat(auto-fill,minmax(72px,1fr));gap:4px}
+
+  /* Signals list */
   .si{padding:11px 0}
   .ss{min-width:34px;height:34px}
-  .sc{padding:13px 12px}
-  .sv{font-size:1.35rem}
+
+  /* Cards: tighter padding */
+  .card{padding:13px 12px}
+
+  /* Update cards */
+  .uc{flex-direction:column;align-items:flex-start;gap:7px}
+
+  /* History filter bar: horizontal scroll */
+  .fbar{flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:5px;scrollbar-width:none;gap:6px}
+  .fbar::-webkit-scrollbar{display:none}
+  .fbar select,.fbar input{flex-shrink:0;min-width:110px}
+  .fbar .btn-csv{flex-shrink:0;margin-left:0}
+
+  /* Config form: single-column */
+  .bcfg-grid{grid-template-columns:1fr}
+
+  /* Risk metric cards: 2-column */
+  .rmc{grid-template-columns:repeat(2,1fr)}
+
+  /* Best/worst trade: 2-column */
+  .bwtg{grid-template-columns:1fr 1fr}
+
+  /* Strategy grid */
+  #str-grid{grid-template-columns:1fr !important}
+
+  /* Open Positions: hide desktop table, show mobile cards */
+  #mob-hide-tbl{display:none}
+  #mob-tc{display:block}
+
+  /* Mobile trade cards */
+  .mtc{padding:12px}
+  .mtc-g{grid-template-columns:repeat(3,1fr)}
+
+  /* Ranking items */
+  .rn{min-width:18px}
+
+  /* System Log */
   #logc{height:140px}
+
+  /* Toast: above bottom nav */
+  #toast{bottom:68px;right:10px;left:10px}
+  .ti{text-align:left}
+
+  /* Exchange keys: single column */
+  #page-exchange .bcfg-grid{grid-template-columns:1fr}
+
+  /* Reset modal: full-width on mobile */
+  #rst-modal > div{padding:22px 18px}
 }
-@media(max-width:400px){
-  .sg{grid-template-columns:1fr}
-  #ct{padding:10px 10px 76px}
+
+/* Small phones */
+@media(max-width:480px){
+  .sg{grid-template-columns:repeat(2,1fr)}
+  .bsp{grid-template-columns:repeat(2,1fr)}
+  #ct{padding:10px 10px calc(80px + env(safe-area-inset-bottom,0))}
   .sv{font-size:1.2rem}
+  .bwtg{grid-template-columns:1fr 1fr}
+  /* Reset modal: stack columns */
+  #rst-modal > div > div[style*="grid-template-columns:1fr 1fr"]{grid-template-columns:1fr !important}
+  /* Config tab bar: wrap compactly */
+  .bcfg-tb{padding:5px 10px;font-size:.73rem}
+  /* Exchange buttons: stack */
+  #exc-binance > div[style*="display:flex"],#exc-bybit > div[style*="display:flex"]{flex-wrap:wrap}
+}
+
+/* Very small phones */
+@media(max-width:360px){
+  .sg{grid-template-columns:1fr}
+  #ct{padding:8px 8px calc(80px + env(safe-area-inset-bottom,0))}
+  .sv{font-size:1.15rem}
 }
 /* Price flash animations for real-time updates */
 @keyframes priceUp{0%{background:rgba(16,185,129,.35);color:#10b981}100%{background:transparent}}
@@ -367,14 +458,10 @@ header{height:var(--hdr);background:rgba(8,15,27,.95);backdrop-filter:blur(20px)
 .bcfg-toggle{border-radius:10px;padding:11px 14px}
 .bcfg-toggle:hover{border-color:var(--accent)!important;background:rgba(0,212,170,.03)}
 
-/* ── Mobile responsive ── */
+/* ── Mobile responsive (section headers + sidebar width) ── */
 @media(max-width:768px){
-  .sg{grid-template-columns:1fr 1fr}
   .sg-section{display:none}
   #sb{width:var(--sb)}
-}
-@media(max-width:480px){
-  .sg{grid-template-columns:1fr}
 }
 /* ═══════════════════════════════════════════════════════ */
 </style>
