@@ -43,6 +43,9 @@ if TYPE_CHECKING:
 _LEGACY_SAMPLES_FILE = MODEL_DIR / "training_samples.pkl"
 _LEGACY_STATS_FILE   = MODEL_DIR / "coin_stats.json"
 
+# Persisted retrain metadata — survives restarts
+_META_FILE = MODEL_DIR / "retrain_meta.json"
+
 RETRAIN_EVERY = 50
 
 # Numeric ID for each strategy (used as a normalised context feature)
@@ -86,6 +89,8 @@ class SelfLearningEngine:
         self._labels_timeline: List[dict] = []
         # Load legacy files so the engine works even before initialize() is called
         self._load_legacy_files()
+        # Restore retrain metadata so counts survive VPS restarts
+        self._load_retrain_meta()
 
     def set_predictor(self, predictor) -> None:
         """Register the live EnsemblePredictor so hot-reload works after retrain."""
@@ -109,6 +114,30 @@ class SelfLearningEngine:
                     self._coin_stats = json.load(f)
             except Exception:
                 pass
+
+    def _load_retrain_meta(self) -> None:
+        """Restore _retrain_count / _last_retrain_ts from JSON so they survive restarts."""
+        if _META_FILE.exists():
+            try:
+                with open(_META_FILE) as f:
+                    meta = json.load(f)
+                self._retrain_count   = meta.get("retrain_count",   self._retrain_count)
+                self._last_retrain_ts = meta.get("last_retrain_ts", self._last_retrain_ts)
+                self._model_trained   = meta.get("model_trained",   self._model_trained)
+            except Exception as exc:
+                logger.debug("Could not load retrain meta: {}", exc)
+
+    def _save_retrain_meta(self) -> None:
+        """Persist retrain metadata to JSON file after every retrain."""
+        try:
+            with open(_META_FILE, "w") as f:
+                json.dump({
+                    "retrain_count":   self._retrain_count,
+                    "last_retrain_ts": self._last_retrain_ts,
+                    "model_trained":   self._model_trained,
+                }, f)
+        except Exception as exc:
+            logger.debug("Could not save retrain meta: {}", exc)
 
     async def initialize(self, db: "CoinDatabase") -> None:
         """Load state from PostgreSQL. Call once after CoinDatabase.start().
@@ -144,6 +173,20 @@ class SelfLearningEngine:
             # showing "Untrained" after a restart when the model was already trained.
             if (MODEL_DIR / "xgb_model.pkl").exists():
                 self._model_trained = True
+
+            # For old deployments that lack retrain_meta.json: estimate counts from the
+            # model file's mtime and sample count so the dashboard is not misleading.
+            model_path = MODEL_DIR / "xgb_model.pkl"
+            if self._retrain_count == 0 and self._model_trained and len(self._samples_y) >= RETRAIN_EVERY:
+                self._retrain_count = max(1, len(self._samples_y) // RETRAIN_EVERY)
+                try:
+                    mtime = model_path.stat().st_mtime
+                    self._last_retrain_ts = datetime.utcfromtimestamp(mtime).isoformat()
+                except Exception:
+                    pass
+                self._save_retrain_meta()
+                logger.info("SelfLearning: retrain meta restored — estimated {} retrain(s) from {} samples",
+                            self._retrain_count, len(self._samples_y))
 
             # Trigger initial retrain ONLY when model file is missing but we have enough data.
             # Skip if model already exists — avoids wasteful retrain on every VPS restart.
@@ -315,6 +358,7 @@ class SelfLearningEngine:
             self._retrain_count += 1
             self._last_retrain_ts = datetime.utcnow().isoformat()
             self._model_trained = True
+            self._save_retrain_meta()   # persist so counts survive restarts
             logger.info("XGBoost retrained on {} samples — win-rate: {:.1f}%",
                         len(y), sum(y) / len(y) * 100)
 
