@@ -1682,9 +1682,14 @@ class TradingSystem:
         opened_ts = meta_snap.get("opened_at", 0) or 0
         if entry > 0 and qty > 0 and opened_ts > 0:
             hours_held = (datetime.utcnow().timestamp() - opened_ts) / 3600
-            funding_periods = max(0, int(hours_held / 8))   # complete 8 h periods only
-            if funding_periods > 0:
+            if hours_held > 0.25:   # skip noise for < 15 min holds
                 notional = entry * qty
+                # Pro-rated estimate: funding accrues continuously on perpetuals
+                # (charged at 8h intervals, but estimated here as a running rate).
+                # Using hours_held/8 instead of int() prevents all sub-8h trades
+                # showing $0 funding, which is misleading — especially in training mode
+                # where max_position_hold = 4h.
+                funding_periods = hours_held / 8.0
                 funding_fee = round(
                     notional * (settings.max_funding_rate_pct / 100) * funding_periods, 4
                 )

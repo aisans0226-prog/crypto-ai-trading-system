@@ -169,6 +169,16 @@ class SelfLearningEngine:
             # Remove stale unlabeled samples older than 24h (scan-loop zombies)
             await db.cleanup_stale_ml_samples(hours=24)
 
+            # Rebuild labels_timeline from DB — it's in-memory only and lost on restart.
+            # Restores the learning curve chart and trade timeline in the dashboard.
+            try:
+                tl = await db.load_labels_timeline(100)
+                if tl:
+                    self._labels_timeline = tl
+                    logger.info("SelfLearning: {} timeline entries rebuilt from DB", len(tl))
+            except Exception as exc:
+                logger.warning("Could not rebuild labels_timeline from DB: {}", exc)
+
             # Mark model as trained if the model file exists on disk — prevents the dashboard
             # showing "Untrained" after a restart when the model was already trained.
             if (MODEL_DIR / "xgb_model.pkl").exists():

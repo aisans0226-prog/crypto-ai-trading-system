@@ -505,3 +505,29 @@ class CoinDatabase:
         if deleted:
             logger.info("ML cleanup: removed {} stale pending samples (>{} h old)", deleted, hours)
         return deleted
+
+    async def load_labels_timeline(self, limit: int = 100) -> List[dict]:
+        """Return last `limit` labeled trades as timeline dicts for rebuilding
+        SelfLearningEngine._labels_timeline after a restart.
+
+        Returns entries in chronological order (oldest first).
+        NOTE: `pnl` is None here (not stored in ml_training_samples) — the
+        dashboard renders it as '--', which is correct behaviour.
+        """
+        async with self._sf() as session:
+            res = await session.execute(
+                select(MLTrainingSample)
+                .where(MLTrainingSample.label.isnot(None))
+                .order_by(MLTrainingSample.created_at.desc())
+                .limit(limit)
+            )
+            rows = res.scalars().all()
+        return [
+            {
+                "ts":     r.created_at.isoformat() if r.created_at else None,
+                "symbol": r.symbol,
+                "label":  r.label,
+                "pnl":    None,  # not stored at ML-sample level; shows '--' in dashboard
+            }
+            for r in reversed(rows)   # restore chronological order
+        ]
