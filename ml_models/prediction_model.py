@@ -128,12 +128,34 @@ class XGBoostPredictor:
                 )
                 logger.info("New XGBoost model created — needs training")
 
-    def predict_proba(self, features: pd.DataFrame) -> float:
-        """Return probability of upward price move (0–1)."""
+    def predict_proba(self, features: pd.DataFrame, context: Optional[dict] = None) -> float:
+        """Return probability of upward price move (0–1).
+
+        If the model was trained with enriched features (N + 6 context features),
+        the caller should pass ``context`` so the same feature vector shape is used.
+        Falls back to neutral defaults when context is not provided (pre-training or
+        prediction-time calls that don't have research data yet).
+        """
         if self._model is None or not XGB_AVAILABLE:
             return 0.5
         try:
-            last_row = features.iloc[[-1]]
+            last_row = features.iloc[[-1]].values  # shape (1, N)
+            # Detect whether the trained model expects more features than the base set
+            expected_n = getattr(self._model, "n_features_in_", last_row.shape[1])
+            base_n = last_row.shape[1]
+            if expected_n > base_n:
+                # Reconstruct context extension with provided values or sensible defaults
+                ctx = context or {}
+                from ml_models.self_learning import _STRATEGY_IDS, _NUM_STRATEGIES
+                ctx_vec = np.array([[
+                    min(ctx.get("signal_score", 9), 18) / 18.0,
+                    ctx.get("research_score", 5.0) / 10.0,
+                    float(ctx.get("mtf_alignment", 0.5)),
+                    1.0 if ctx.get("direction", "LONG") == "LONG" else 0.0,
+                    min(float(ctx.get("rr_ratio", 2.0)), 4.0) / 4.0,
+                    _STRATEGY_IDS.get(str(ctx.get("strategy", "FALLBACK")).upper(), 0) / _NUM_STRATEGIES,
+                ]], dtype=np.float32)
+                last_row = np.concatenate([last_row, ctx_vec], axis=1)
             proba = self._model.predict_proba(last_row)[0][1]
             return float(proba)
         except Exception as exc:
@@ -236,9 +258,9 @@ class EnsemblePredictor:
             self._lstm._load_or_create()
             logger.info("EnsemblePredictor: LSTM hot-reloaded from disk")
 
-    def predict(self, df: pd.DataFrame) -> Tuple[int, float]:
+    def predict(self, df: pd.DataFrame, context: Optional[dict] = None) -> Tuple[int, float]:
         features = build_features(df)
-        xgb_prob = self._xgb.predict_proba(features)
+        xgb_prob = self._xgb.predict_proba(features, context=context)
         lstm_prob = self._lstm.predict_proba(features)
 
         # Weighted ensemble

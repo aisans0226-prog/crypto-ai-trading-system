@@ -282,8 +282,16 @@ class TradingSystem:
             )
         await self._alerts.send_text(online_msg)
 
-        # Run all async tasks
-        await asyncio.gather(
+        # Run all async tasks — return_exceptions=True prevents one failing loop
+        # from cancelling the others, but we must inspect results so critical loop
+        # crashes aren't silently swallowed.
+        _loop_names = [
+            "ws_feed", "scan_loop", "arbitrage_loop", "portfolio_sync_loop",
+            "position_monitor_loop", "limit_order_monitor_loop",
+            "coin_ranking_loop", "updater_polling",
+        ]
+        _critical = {"scan_loop", "position_monitor_loop", "limit_order_monitor_loop"}
+        results = await asyncio.gather(
             self._ws_feed.start(),
             self._scan_loop(),
             self._arbitrage_loop(symbols),
@@ -294,6 +302,18 @@ class TradingSystem:
             self._updater.start_polling(),
             return_exceptions=True,
         )
+        for name, res in zip(_loop_names, results):
+            if isinstance(res, Exception):
+                logger.error("Loop '{}' exited with exception: {}", name, res)
+                if name in _critical:
+                    try:
+                        await self._alerts.send_text(
+                            f"🚨 *CRITICAL* — Bot loop `{name}` crashed!\n"
+                            f"`{type(res).__name__}: {res}`\n"
+                            "Trading is halted. Restart required."
+                        )
+                    except Exception:
+                        pass
 
     async def stop(self) -> None:
         self._running = False
@@ -588,7 +608,10 @@ class TradingSystem:
                                 signal.symbol, "15m", 200
                             )
                             self._klines_cache[signal.symbol] = df
-                        ml_score, confidence = self._ml.predict(df)
+                        ml_score, confidence = self._ml.predict(df, context={
+                            "signal_score": signal.score,
+                            "direction":    signal.direction,
+                        })
                         signal.score += ml_score
                         signal.ai_prediction = confidence
                         signal.confidence = confidence
@@ -808,15 +831,16 @@ class TradingSystem:
             logger.info("{} — FALLBACK setup: {} sl={:.6f} tp={:.6f}", signal.symbol, signal.direction, sl, tp)
 
         # Re-fetch available balance from exchange right before sizing.
-        # Prevents stale balance issues when multiple trades open within the same
-        # scan cycle (each trade sees the true remaining free margin).
+        # Only refreshes the balance figure — does NOT reset _used_margin because
+        # that would create a race condition with concurrently-running limit-order
+        # fill callbacks that call add_margin(). _used_margin is maintained
+        # correctly by add_margin() / release_margin() on open/close.
         if not self.dry_run:
             try:
                 _bal_exec = self._bybit_exec if self.exchange == "bybit" else self._binance_exec
                 _live_bal = await _bal_exec.get_account_balance()
                 if _live_bal > 0:
                     self._risk.update_balance(_live_bal)
-                    self._risk.reset_margin()  # exchange balance already excludes committed margin
             except Exception as _bal_exc:
                 logger.debug("Pre-trade balance refresh error: {}", _bal_exc)
 
@@ -937,7 +961,6 @@ class TradingSystem:
             research_score=research_score,
             daily_remaining=max(0, self._risk.daily_trades_remaining - 1),
         )
-        self._risk.record_trade_opened()
         trade_id = None
 
         if self.dry_run:
@@ -1023,6 +1046,9 @@ class TradingSystem:
             self._pending_research_ids[risk_params.symbol] = research_id
 
         if trade_id:
+            # Daily counter is incremented here — only when the trade actually opened
+            # (exchange confirmed, or dry-run position recorded successfully).
+            self._risk.record_trade_opened()
             # Reserve margin in risk manager (prevents concurrent trades from
             # over-sizing against the same balance within the same scan cycle).
             self._risk.add_margin(risk_params.position_size_usdt / max(risk_params.leverage, 1))
@@ -1578,6 +1604,7 @@ class TradingSystem:
             research_score=pending.research_score,
             strategy_name=pending.strategy_name,
             limit_price=limit_price,
+            mtf_alignment=pending.mtf_alignment,   # preserve original research value for ML context
         )
         logger.info(
             "🔄 LIMIT retry {}/{}: {} @ {:.6f}",
@@ -1632,6 +1659,10 @@ class TradingSystem:
                 if raw:
                     meta = json.loads(raw)
                     self._position_meta[symbol] = meta
+                    # Re-commit margin so risk_manager knows what's deployed
+                    margin = meta.get("margin_used", 0.0)
+                    if margin > 0:
+                        self._risk.add_margin(margin)
                     restored += 1
                     logger.info(
                         "Restored position meta for {} from Redis "
@@ -1639,7 +1670,7 @@ class TradingSystem:
                         symbol,
                         meta.get("sl_order_id"),
                         meta.get("tp_order_id"),
-                        meta.get("margin_used", 0.0),
+                        margin,
                     )
             if restored:
                 logger.info("Position meta restored from Redis for {} symbols", restored)
@@ -2005,6 +2036,17 @@ async def run_all(args: argparse.Namespace) -> None:
                     "Trading system exited with error: {} — dashboard remains running",
                     exc,
                 )
+                # Attempt to notify operator even if the main system is down
+                try:
+                    from alerts.telegram_bot import TelegramBot
+                    _tb = TelegramBot(settings.telegram_token, settings.telegram_chat_id)
+                    await _tb.send_text(
+                        f"🚨 *TRADING SYSTEM CRASHED*\n"
+                        f"`{type(exc).__name__}: {exc}`\n"
+                        "Dashboard is still live. Restart required."
+                    )
+                except Exception:
+                    pass
 
         await asyncio.gather(safe_trading(), server.serve())
 

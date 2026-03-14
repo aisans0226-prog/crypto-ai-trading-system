@@ -88,16 +88,13 @@ class PumpDetector:
                 oi_now = self._oi_bulk.get(symbol)
                 if oi_now is None:
                     oi_now = await self._engine.get_open_interest_binance(symbol)
-                # Only write to cache when we have a valid value — prevents None
-                # from poisoning the cache and causing TypeError on the next cycle.
                 oi_prev = self._oi_cache.get(symbol, -1)
                 if oi_now is not None:
                     self._oi_cache[symbol] = oi_now
-                    if oi_prev < 0 or oi_prev is None:
-                        if oi_now > 0:
-                            score += 1
-                            signals.append("oi_active")
-                    elif oi_prev > 0 and oi_now > oi_prev:
+                    # Only compare when we have a real baseline from a previous cycle.
+                    # Do NOT award points on first visit (oi_prev == -1) to avoid
+                    # inflating ALL scores on the first scan after startup.
+                    if oi_prev > 0 and oi_now > oi_prev:
                         oi_delta_pct = (oi_now - oi_prev) / oi_prev * 100
                         if oi_delta_pct >= 0.5:
                             score += 1

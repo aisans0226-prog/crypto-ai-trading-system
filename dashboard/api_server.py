@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Dict, List, Optional
 
+import aiohttp
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
@@ -17,8 +18,17 @@ from loguru import logger
 from config import settings
 import ai_engine.llm_analyzer as llm_analyzer
 
+# Persistent HTTP session — reused by _fetch_all_prices every 5s (avoids TCP overhead)
+_http_session: Optional[aiohttp.ClientSession] = None
+
+
 @asynccontextmanager
 async def lifespan(app_inst: "FastAPI"):
+    global _http_session
+    _http_session = aiohttp.ClientSession(
+        connector=aiohttp.TCPConnector(limit=10, ssl=False),
+        timeout=aiohttp.ClientTimeout(total=5),
+    )
     llm_analyzer.update_cfg(_ai_cfg)
     _rt_task = asyncio.create_task(_realtime_loop())
     try:
@@ -29,6 +39,8 @@ async def lifespan(app_inst: "FastAPI"):
             await _rt_task
         except asyncio.CancelledError:
             pass
+        if _http_session:
+            await _http_session.close()
 
 
 app = FastAPI(title="Crypto AI Dashboard", version="2.0.0", docs_url="/docs", lifespan=lifespan)
@@ -75,7 +87,7 @@ def _make_bot_status_payload() -> dict:
         "uptime_seconds":     round(_t.time() - started, 0) if started else 0,
         "signals_in_memory":  len(state.recent_signals),
         "training_mode":      _cfg.training_mode,
-        "dry_run":            getattr(_cfg, "dry_run", False),
+        "dry_run":            getattr(state.trading_system, "dry_run", False) if state.trading_system else getattr(_cfg, "dry_run", False),
         "binance_testnet":    getattr(_cfg, "binance_testnet", False),
         "bybit_testnet":      getattr(_cfg, "bybit_testnet", False),
         "score_threshold":    _cfg.effective_signal_score_threshold,
@@ -138,8 +150,9 @@ async def health():
     # PostgreSQL
     try:
         if state.portfolio_manager and hasattr(state.portfolio_manager, "_db"):
+            from sqlalchemy import text as _sa_text
             async with state.portfolio_manager._db.connect() as conn:
-                await conn.execute("SELECT 1")
+                await conn.execute(_sa_text("SELECT 1"))
             checks["db"] = "ok"
         else:
             checks["db"] = "not_started"
@@ -181,48 +194,57 @@ async def health():
 
 
 async def _fetch_all_prices() -> dict:
-    """Fetch ALL futures prices — testnet-aware, proxy-aware, Bybit fallback."""
-    import aiohttp
-    # Respect BINANCE_TESTNET flag so geo-blocked VPS still gets prices
+    """Fetch ALL futures prices — testnet-aware, proxy-aware, Bybit fallback.
+    Uses the module-level persistent session to avoid TCP reconnect overhead.
+    """
+    import aiohttp as _aiohttp
     base = (
         "https://testnet.binancefuture.com"
         if getattr(settings, "binance_testnet", False)
         else "https://fapi.binance.com"
     )
     proxy = getattr(settings, "http_proxy", None) or None
-    try:
-        async with aiohttp.ClientSession() as session:
-            req_kw: dict = {"timeout": aiohttp.ClientTimeout(total=5)}
-            if proxy:
-                req_kw["proxy"] = proxy
-            async with session.get(f"{base}/fapi/v1/ticker/price", **req_kw) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return {item["symbol"]: float(item["price"]) for item in data}
-    except Exception as exc:
-        logger.debug("Binance price fetch failed: {}", exc)
 
-    # Bybit fallback — covers fully geo-blocked Binance or Bybit-exchange deployments
+    async def _get(sess: _aiohttp.ClientSession, url: str) -> Optional[dict]:
+        kw: dict = {}
+        if proxy:
+            kw["proxy"] = proxy
+        try:
+            async with sess.get(url, timeout=_aiohttp.ClientTimeout(total=5), **kw) as r:
+                return await r.json() if r.status == 200 else None
+        except Exception:
+            return None
+
+    # Use persistent session when available
+    sess = _http_session
+    if sess is None or sess.closed:
+        sess = _aiohttp.ClientSession()
+        _cleanup = True
+    else:
+        _cleanup = False
+
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                "https://api.bybit.com/v5/market/tickers?category=linear",
-                timeout=aiohttp.ClientTimeout(total=5),
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    prices: dict = {}
-                    for item in data.get("result", {}).get("list", []):
-                        sym = item.get("symbol", "")
-                        lp  = item.get("lastPrice")
-                        if sym.endswith("USDT") and lp:
-                            try:
-                                prices[sym] = float(lp)
-                            except Exception:
-                                pass
-                    return prices
+        # Binance
+        data = await _get(sess, f"{base}/fapi/v1/ticker/price")
+        if data:
+            return {item["symbol"]: float(item["price"]) for item in data}
+        # Bybit fallback
+        data = await _get(sess, "https://api.bybit.com/v5/market/tickers?category=linear")
+        if data:
+            prices: dict = {}
+            for item in data.get("result", {}).get("list", []):
+                sym, lp = item.get("symbol", ""), item.get("lastPrice")
+                if sym.endswith("USDT") and lp:
+                    try:
+                        prices[sym] = float(lp)
+                    except Exception:
+                        pass
+            return prices
     except Exception as exc:
-        logger.debug("Bybit price fetch failed: {}", exc)
+        logger.debug("Price fetch error: {}", exc)
+    finally:
+        if _cleanup:
+            await sess.close()
 
     return {}
 

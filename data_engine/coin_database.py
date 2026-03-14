@@ -223,8 +223,8 @@ class CoinDatabase:
             )
             await session.execute(
                 update(CoinStats).where(CoinStats.symbol == log.symbol).values(
-                    wins=CoinStats.wins + (1 if pnl > 0 else 0),
-                    losses=CoinStats.losses + (1 if pnl <= 0 else 0),
+                    wins=CoinStats.wins + (1 if pnl >= 0.3 else 0),
+                    losses=CoinStats.losses + (1 if pnl < 0.3 else 0),
                     total_pnl=CoinStats.total_pnl + pnl,
                     updated_at=datetime.utcnow(),
                 )
@@ -353,8 +353,8 @@ class CoinDatabase:
                 await session.execute(
                     update(StrategyStats).where(StrategyStats.name == name).values(
                         total_trades    = total,
-                        wins            = row.wins   + (1 if pnl > 0 else 0),
-                        losses          = row.losses + (1 if pnl <= 0 else 0),
+                        wins            = row.wins   + (1 if pnl >= 0.3 else 0),
+                        losses          = row.losses + (1 if pnl < 0.3 else 0),
                         total_pnl       = round(row.total_pnl + pnl, 4),
                         avg_pnl         = new_avg,
                         recent_pnl_json = json.dumps(recent),
@@ -365,8 +365,8 @@ class CoinDatabase:
                 session.add(StrategyStats(
                     name            = name,
                     total_trades    = 1,
-                    wins            = 1 if pnl > 0 else 0,
-                    losses          = 1 if pnl <= 0 else 0,
+                    wins            = 1 if pnl >= 0.3 else 0,
+                    losses          = 1 if pnl < 0.3 else 0,
                     total_pnl       = round(pnl, 4),
                     avg_pnl         = round(pnl, 4),
                     recent_pnl_json = json.dumps([pnl]),

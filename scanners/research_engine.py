@@ -22,6 +22,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import numpy as np
+import ta
 from loguru import logger
 
 from config import settings
@@ -103,7 +104,7 @@ class ResearchEngine:
 
         # Normalise to 0–10
         score = min(10.0, (raw_score / self._MAX_RAW) * 10.0)
-        mtf_alignment = sum(tf_agrees) / len(tf_agrees) if tf_agrees else 0.0
+        mtf_alignment = round(sum(tf_agrees) / len(tf_agrees) if tf_agrees else 0.0, 2)
 
         # ── Funding rate gate (global, not per-TF) ────────────────────────
         funding = self._funding_cache.get(symbol)
@@ -215,11 +216,9 @@ class ResearchEngine:
             bad.append(f"{label}:ema_against_direction")
 
         # ── 2. RSI zone — nuanced scoring (max 1.0) ────────────────────────
-        delta  = close.diff()
-        gain   = delta.clip(lower=0).rolling(14).mean()
-        loss   = (-delta.clip(upper=0)).rolling(14).mean()
-        rsi    = 100 - (100 / (1 + gain / (loss + 1e-9)))
-        rsi_v  = float(rsi.iloc[-1])
+        # Use Wilder's EMA (via ta library) to match pump_detector.py and avoid
+        # systematic 5-10pt discrepancy from the simpler SMA formula.
+        rsi_v  = float(ta.momentum.RSIIndicator(close=close, window=14).rsi().iloc[-1])
 
         if direction == "LONG":
             if 40 <= rsi_v <= 65:

@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     account_balance_usdt: float = 1000.0
     risk_per_trade_pct: float = 1.0        # 1% risk per trade
     max_leverage: int = 3
-    max_open_trades: int = 5               # max 5 simultaneous positions
+    max_open_trades: int = 6               # max simultaneous positions (reduced from 20 to prevent over-leverage)
     min_risk_reward_ratio: float = 2.0
     max_daily_trades: int = 3              # max trades bot can open per day
     max_daily_loss_pct: float = 5.0        # halt trading if daily realized loss >= 5% of balance
@@ -103,13 +103,13 @@ class Settings(BaseSettings):
 
     # Trailing stop: slides SL upward (LONG) / downward (SHORT) as price moves in favour
     trailing_stop_enabled: bool = True
-    trailing_stop_activation_pct: float = 3.0   # % profit required to activate
+    trailing_stop_activation_pct: float = 5.0   # % profit required to activate (raised from 3% — avoids trailing before TP hit)
     trailing_stop_distance_pct: float = 1.0      # keep SL this % behind the peak price
     trailing_stop_min_move_pct: float = 0.3      # only update exchange SL if new SL improves by ≥ this %
 
     # Breakeven stop: move SL to entry + 0.1% buffer once profit reaches breakeven_trigger_pct
     breakeven_stop_enabled: bool = True
-    breakeven_trigger_pct: float = 2.0     # activate after +2% unrealised profit
+    breakeven_trigger_pct: float = 4.5     # activate after +4.5% profit (raised — prevents premature BE before TP)
 
     # Time-based exit: force-close position after N hours regardless of SL/TP (0 = disabled)
     max_position_hold_hours: float = 18.0
