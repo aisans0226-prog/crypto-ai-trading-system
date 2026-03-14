@@ -234,8 +234,12 @@ class SelfLearningEngine:
             fvec = features.iloc[-1].values.astype(np.float32)   # flat, for XGBoost
             seq  = features.values[-60:].astype(np.float32)       # 60-row, for LSTM
 
-            # Append 6 context features so XGBoost can learn signal quality → outcome
+            # Append 8 context features so XGBoost/LGB can learn signal quality → outcome
+            # Base-6: signal_score, research_score, mtf_alignment, direction, rr_ratio, strategy
+            # New-2:  oi_delta_pct (OI % change, normalised), funding_rate (normalised)
             ctx = context or {}
+            oi_delta_norm = min(max(ctx.get("oi_delta_pct", 0.0) / 5.0, -1.0), 1.0)
+            funding_norm  = min(max(ctx.get("funding_rate", 0.0) / 0.01, -1.0), 1.0)
             ctx_vec = np.array([
                 min(ctx.get("signal_score", 7), 18) / 18.0,
                 ctx.get("research_score", 5.0) / 10.0,
@@ -243,6 +247,8 @@ class SelfLearningEngine:
                 1.0 if ctx.get("direction", "LONG") == "LONG" else 0.0,
                 min(float(ctx.get("rr_ratio", 2.0)), 4.0) / 4.0,
                 _STRATEGY_IDS.get(str(ctx.get("strategy", "FALLBACK")).upper(), 0) / _NUM_STRATEGIES,
+                oi_delta_norm,   # OI delta: 5% move normalised to ±1.0
+                funding_norm,    # funding rate: 0.01% normalised to ±1.0
             ], dtype=np.float32)
             fvec_enriched = np.concatenate([fvec, ctx_vec])
 
@@ -332,50 +338,58 @@ class SelfLearningEngine:
             return
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._do_retrain)
-        # Hot-reload both models into live predictor without restarting bot
+        # Hot-reload all models into live predictor without restarting bot
         if self._predictor is not None:
             self._predictor.reload_xgb()
+            self._predictor.reload_lgb()   # reload LightGBM model after retrain
             if TF_AVAILABLE:
                 self._predictor.reload_lstm()
 
     def _do_retrain(self) -> None:
-        """Retrain XGBoost (always) + LSTM (when enough sequences are available)."""
+        """Retrain XGBoost + LightGBM (always) + LSTM (when enough sequences are available).
+
+        Delegates all training to the improved predictor classes in prediction_model.py:
+          - XGBoostPredictor.train(): stratified 80/20 split, scale_pos_weight, AUC early-stop
+          - LGBMPredictor.train():    same improvements, second tree model for diversity
+          - LSTMPredictor.train():    StandardScaler normalisation added
+        Both tree models log their validation AUC after training.
+        """
         try:
             X = np.array(self._samples_X)
             y = np.array(self._samples_y)
             if len(X) > 5000:
                 X, y = X[-5000:], y[-5000:]
 
+            # Deferred imports avoid circular-import issues at module load time
+            from ml_models.prediction_model import (
+                XGBoostPredictor, LGBMPredictor, HAS_LGB as _HAS_LGB,
+            )
+
             # ── XGBoost retrain ──────────────────────────────────────────
-            model = xgb.XGBClassifier(
-                n_estimators=400, max_depth=6, learning_rate=0.03,
-                subsample=0.8, colsample_bytree=0.8,
-                eval_metric="logloss", random_state=42,
-            )
-            # Use a 10% hold-out split for eval (detects overfitting)
-            split = max(1, int(len(X) * 0.9))
-            X_tr, X_val = X[:split], X[split:]
-            y_tr, y_val = y[:split], y[split:]
-            model.fit(
-                X_tr, y_tr,
-                eval_set=[(X_val, y_val)] if len(X_val) > 0 else [(X_tr, y_tr)],
-                verbose=False,
-            )
-            with open(MODEL_DIR / "xgb_model.pkl", "wb") as f:
-                pickle.dump(model, f)
+            # XGBoostPredictor() loads existing model; train() creates a fresh one
+            # and overwrites the file — hot-reload picks it up after this returns.
+            xgb_pred = XGBoostPredictor()
+            xgb_pred.train(X, y)
+
+            # ── LightGBM retrain (when lightgbm is installed) ────────────
+            if _HAS_LGB:
+                lgb_pred = LGBMPredictor()
+                lgb_pred.train(X, y)
 
             self._new_since_retrain = 0
             self._retrain_count += 1
             self._last_retrain_ts = datetime.utcnow().isoformat()
             self._model_trained = True
             self._save_retrain_meta()   # persist so counts survive restarts
-            logger.info("XGBoost retrained on {} samples — win-rate: {:.1f}%",
-                        len(y), sum(y) / len(y) * 100)
+            logger.info(
+                "Models retrained on {} samples — win-rate: {:.1f}%",
+                len(y), sum(y) / len(y) * 100,
+            )
 
             # ── LSTM retrain (requires TF and in-session sequences) ───────
             # Uses _samples_seq_y which is kept in lock-step with _samples_seq,
             # preventing the label-misalignment bug that arose from trades with
-            # no 60-bar history interleaveing with ones that do have sequences.
+            # no 60-bar history interleaving with ones that do have sequences.
             if TF_AVAILABLE and len(self._samples_seq) >= 30:
                 self._do_retrain_lstm(np.array(self._samples_seq_y[-5000:]))
 

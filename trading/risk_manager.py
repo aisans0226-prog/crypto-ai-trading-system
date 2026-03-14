@@ -231,7 +231,24 @@ class RiskManager:
             return None
 
         risk_usdt = free_balance * (settings.risk_per_trade_pct / 100.0)
-        leverage = settings.max_leverage
+
+        # Dynamic leverage: tighter SL allows higher leverage without liquidation risk;
+        # wider SL needs lower leverage to keep margin safe.
+        # Controlled by DYNAMIC_LEVERAGE_ENABLED env var (default: off).
+        if getattr(settings, 'dynamic_leverage_enabled', False):
+            sl_pct = abs(entry_price - stop_loss) / entry_price   # e.g. 0.015 = 1.5%
+            if sl_pct >= 0.020:      # SL >= 2.0% — wide stop, reduce leverage
+                leverage = 1
+            elif sl_pct >= 0.012:    # SL >= 1.2% — moderate stop
+                leverage = 2
+            else:                    # SL < 1.2% — tight stop, max leverage safe
+                leverage = settings.max_leverage
+            logger.debug(
+                "Dynamic leverage: sl_pct={:.2%} → {}x (max={}x)",
+                sl_pct, leverage, settings.max_leverage,
+            )
+        else:
+            leverage = settings.max_leverage
 
         # Position size in quote currency (risk-based)
         risk_pct_of_entry = risk / entry_price
@@ -266,15 +283,23 @@ class RiskManager:
             * settings.effective_funding_periods_estimate
         )
 
-        total_fees_usdt = round_trip_fee_usdt + estimated_funding_usdt
+        # C. Slippage estimate: 0.05% of notional for liquid coins (market order entry).
+        # Accounts for bid-ask spread slippage when a market order consumes the book.
+        slippage_usdt = position_size_usdt * 0.0005
+
+        total_fees_usdt = round_trip_fee_usdt + estimated_funding_usdt + slippage_usdt
         fee_ratio = total_fees_usdt / risk_usdt if risk_usdt > 0 else 0.0
+        logger.debug(
+            "Fees: taker={:.4f} funding_est={:.4f} slippage={:.4f} total={:.4f}",
+            round_trip_fee_usdt, estimated_funding_usdt, slippage_usdt, total_fees_usdt,
+        )
         if fee_ratio > 0.20:
             logger.warning(
                 "{} total estimated fees {:.4f} USDT "
-                "(taker={:.4f} + funding_est={:.4f}) = {:.1f}%% of {:.4f} USDT risk — "
+                "(taker={:.4f} + funding_est={:.4f} + slippage={:.4f}) = {:.1f}%% of {:.4f} USDT risk — "
                 "SL may be too tight or balance too small",
                 symbol, total_fees_usdt,
-                round_trip_fee_usdt, estimated_funding_usdt,
+                round_trip_fee_usdt, estimated_funding_usdt, slippage_usdt,
                 fee_ratio * 100, risk_usdt,
             )
 
@@ -299,6 +324,16 @@ class RiskManager:
 
         quantity = position_size_usdt / entry_price
 
+        # Minimum notional: reject if position is too small for the exchange to accept.
+        # 10 USDT = 2× the typical exchange floor of 5 USDT, used as a safety margin.
+        MIN_NOTIONAL_USDT = 10.0
+        if position_size_usdt < MIN_NOTIONAL_USDT:
+            logger.warning(
+                "{} position size {:.2f} USDT < minimum {:.2f} USDT — skipping",
+                symbol, position_size_usdt, MIN_NOTIONAL_USDT,
+            )
+            return None
+
         params = RiskParameters(
             symbol=symbol,
             direction=direction,
@@ -315,7 +350,7 @@ class RiskManager:
         logger.info(
             "RiskParams | {} {} | entry={} SL={} TP={} qty={} lev={} RR={} | "
             "risk=${:.2f}  free=${:.2f} (reserve={:.0f}%% of ${:.2f})  "
-            "notional=${:.2f}  margin=${:.2f}  taker≈${:.4f}  funding_est≈${:.4f}",
+            "notional=${:.2f}  margin=${:.2f}  taker≈${:.4f}  funding_est≈${:.4f}  slippage≈${:.4f}",
             symbol, direction, entry_price, stop_loss, take_profit,
             quantity, leverage, round(rr, 2),
             risk_usdt, free_balance,
@@ -324,6 +359,7 @@ class RiskManager:
             round(position_size_usdt / leverage, 2),
             round(round_trip_fee_usdt, 4),
             round(estimated_funding_usdt, 4),
+            round(slippage_usdt, 4),
         )
         return params
 

@@ -62,16 +62,23 @@ class ResearchEngine:
         symbol: str,
         direction: str,
         initial_score: int,
+        context: dict = None,
     ) -> ResearchResult:
         """
         Run full multi-timeframe deep research.
         Timeframe fetches execute in parallel for maximum speed.
         Returns ResearchResult — caller checks .passed before executing trade.
+
+        context: optional dict with pre-fetched external data:
+            fear_greed_value  — int 0-100 (Crypto Fear & Greed Index)
+            oi_delta          — float % change in open interest since last cycle
+            liq_distance_pct  — float % distance from nearest liquidation cluster
         """
+        context = context or {}
         raw_score = 0.0
         reasons: List[str] = []
         failed: List[str] = []
-        tf_agrees: List[bool] = []
+        tf_agree_map: Dict[str, bool] = {}  # keyed by TF label for weighted alignment
 
         # ── Fetch all timeframes IN PARALLEL (3x faster than sequential) ──
         tf_list = [tf for tf, _ in self._TIMEFRAMES]
@@ -86,7 +93,7 @@ class ResearchEngine:
             weight = tf_weights[tf]
             if isinstance(df_or_exc, Exception):
                 logger.debug("Research {}/{} error: {}", symbol, tf, df_or_exc)
-                tf_agrees.append(False)
+                tf_agree_map[tf] = False
                 failed.append(f"{tf}:data_error")
                 continue
             try:
@@ -94,17 +101,25 @@ class ResearchEngine:
                     df_or_exc, direction, tf
                 )
                 raw_score += tf_score * weight
-                tf_agrees.append(agrees)
+                tf_agree_map[tf] = agrees
                 reasons.extend(tf_ok)
                 failed.extend(tf_bad)
             except Exception as exc:
                 logger.debug("Research {}/{} analysis error: {}", symbol, tf, exc)
-                tf_agrees.append(False)
+                tf_agree_map[tf] = False
                 failed.append(f"{tf}:analysis_error")
 
         # Normalise to 0–10
         score = min(10.0, (raw_score / self._MAX_RAW) * 10.0)
-        mtf_alignment = round(sum(tf_agrees) / len(tf_agrees) if tf_agrees else 0.0, 2)
+
+        # ── Weighted MTF alignment (Fix 1) ───────────────────────────────────
+        # 4h carries 3× the weight of 15m, matching the per-TF score weights.
+        # If 4h disagrees the alignment drops to (1+2)/6=0.50 — well below the
+        # 0.67 threshold.  If only 15m disagrees: (2+3)/6=0.83 — passes correctly.
+        _TF_W = {"15m": 1, "1h": 2, "4h": 3}
+        _w_agree = sum(_TF_W.get(tf, 1) for tf, a in tf_agree_map.items() if a)
+        _w_total = sum(_TF_W.get(tf, 1) for tf in tf_agree_map) or 1
+        mtf_alignment = round(_w_agree / _w_total, 2)
 
         # ── Funding rate gate (global, not per-TF) ────────────────────────
         funding = self._funding_cache.get(symbol)
@@ -119,6 +134,58 @@ class ResearchEngine:
                 penalty = min(1.0, abs(funding + 0.005) * 200)
                 score = max(0.0, score - penalty)
                 failed.append(f"very_neg_funding_{funding:.4f}")
+
+        # ── OI trend confirmation (global bonus) ─────────────────────────────
+        # Rising OI on a LONG entry = real buying pressure (not just short covering).
+        # Falling OI on a SHORT entry = real selling pressure.
+        oi_delta = context.get("oi_delta")
+        if oi_delta is not None:
+            if direction == "LONG" and oi_delta > 0.3:
+                score = min(10.0, score + 0.3)
+                reasons.append(f"oi_rising_{oi_delta:.2f}pct")
+                logger.debug("OI rising {:.2f}% → +0.3 research bonus", oi_delta)
+            elif direction == "SHORT" and oi_delta < -0.3:
+                score = min(10.0, score + 0.3)
+                reasons.append(f"oi_falling_{oi_delta:.2f}pct")
+                logger.debug("OI falling {:.2f}% → +0.3 research bonus", oi_delta)
+
+        # ── Fear & Greed macro filter (if enabled and data available) ─────────
+        if getattr(settings, "fear_greed_enabled", False):
+            try:
+                fg_value = context.get("fear_greed_value")
+                if fg_value is not None:
+                    if direction == "LONG" and fg_value <= 20:
+                        # Extreme Fear: market in panic, dangerous to enter long
+                        score = max(0.0, score - 0.5)
+                        failed.append(f"fear_greed_{fg_value}_extreme_fear")
+                        logger.debug("Fear&Greed={} (Extreme Fear) → -0.5 LONG penalty", fg_value)
+                    elif direction == "LONG" and fg_value >= 85:
+                        # Extreme Greed: market overheated, likely pullback soon
+                        score = max(0.0, score - 0.3)
+                        failed.append(f"fear_greed_{fg_value}_extreme_greed")
+                        logger.debug("Fear&Greed={} (Extreme Greed) → -0.3 LONG penalty", fg_value)
+                    elif direction == "SHORT" and fg_value >= 80:
+                        # Greed extreme: good macro tailwind for a short
+                        score = min(10.0, score + 0.3)
+                        reasons.append(f"fear_greed_{fg_value}_greed_short")
+                        logger.debug("Fear&Greed={} (Extreme Greed) → +0.3 SHORT bonus", fg_value)
+            except Exception as _fg_err:
+                logger.debug("Fear & Greed filter skipped: {}", _fg_err)
+
+        # ── Liquidation cluster proximity bonus ───────────────────────────────
+        # A liquidation cluster 0.2–1.5% away adds forced buying/selling pressure
+        # that amplifies the move; the closer, the bigger the bonus (max +0.5).
+        if getattr(settings, "liquidation_data_enabled", False):
+            try:
+                liq_distance = context.get("liq_distance_pct")
+                if liq_distance is not None and 0.2 <= liq_distance <= 1.5:
+                    # Linear bonus: 0.5 at 0.2% distance, 0.0 at 1.5% distance
+                    bonus = round((1.5 - liq_distance) / 1.5 * 0.5, 2)
+                    score = min(10.0, score + bonus)
+                    reasons.append(f"liq_cluster_{liq_distance:.2f}pct_away")
+                    logger.debug("Liquidation cluster at {:.2f}% → +{} bonus", liq_distance, bonus)
+            except Exception as _liq_err:
+                logger.debug("Liquidation bonus skipped: {}", _liq_err)
 
         # ── Historical win-rate bonus/penalty (±1 pt) when ≥3 trades ─────
         stats = await self._db.get_coin_stats(symbol)
@@ -296,7 +363,9 @@ class ResearchEngine:
                 bad.append(f"{label}:bb_overextended")
 
         # ── 7. Taker buy/sell delta (max 0.5) ─────────────────────────────
-        # Uses the taker_buy_base column from OHLCV; skip if not present
+        # Binance provides taker_buy_base; Bybit may provide buy_ratio directly.
+        # If neither column exists, award a neutral 0.25 (half credit) so Bybit
+        # symbols are not systematically under-scored vs Binance symbols.
         if "taker_buy_base" in df.columns:
             taker_buy  = df["taker_buy_base"].astype(float).iloc[-3:].sum()
             total_vol  = volume.iloc[-3:].sum()
@@ -308,6 +377,19 @@ class ResearchEngine:
                 elif direction == "SHORT" and buy_ratio <= 0.45:
                     score += 0.5
                     ok.append(f"{label}:taker_sell_{1-buy_ratio:.2f}")
+        elif "buy_ratio" in df.columns:
+            # Bybit implementations may pre-compute this column
+            buy_ratio = float(df["buy_ratio"].iloc[-1])
+            if direction == "LONG" and buy_ratio >= 0.55:
+                score += 0.5
+                ok.append(f"{label}:taker_buy_{buy_ratio:.2f}")
+            elif direction == "SHORT" and buy_ratio <= 0.45:
+                score += 0.5
+                ok.append(f"{label}:taker_sell_{1-buy_ratio:.2f}")
+        else:
+            # No taker data available — award neutral half-credit, not 0
+            score += 0.25
+            ok.append(f"{label}:taker_neutral")
 
         # Agreement = EMA at least partial + RSI not extreme
         agrees = partial and not (

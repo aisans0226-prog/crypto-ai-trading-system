@@ -162,6 +162,13 @@ class Settings(BaseSettings):
     ai_model: str = ""                 # e.g. gpt-4o, claude-3-5-sonnet-20241022, gemini-1.5-pro
     ai_analysis_enabled: bool = False  # enable LLM-enhanced trade research
 
+    # External data sources
+    fear_greed_enabled: bool = Field(default=True, env="FEAR_GREED_ENABLED")
+    news_filter_enabled: bool = Field(default=False, env="NEWS_FILTER_ENABLED")
+    liquidation_data_enabled: bool = Field(default=True, env="LIQUIDATION_DATA_ENABLED")
+    cryptopanic_api_key: str = Field(default="", env="CRYPTOPANIC_API_KEY")
+    dynamic_leverage_enabled: bool = Field(default=False, env="DYNAMIC_LEVERAGE_ENABLED")
+
     # Auto Strategy Discovery
     strategy_discovery_enabled: bool = True  # if False, falls back to first-match (legacy)
 

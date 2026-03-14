@@ -63,6 +63,7 @@ def _round_to_tick(value: float, tick: float) -> float:
 class BinanceExecutor:
     BASE = "https://fapi.binance.com"
     BASE_TEST = "https://testnet.binancefuture.com"
+    _symbol_filters_cache: dict = {}  # class-level cache shared across all instances
 
     def __init__(self) -> None:
         self._key = settings.binance_api_key
@@ -233,6 +234,65 @@ class BinanceExecutor:
             )
         return ok
 
+    # ── Lazy per-symbol filter fetch (fallback when bulk load missed a symbol) ──
+    async def _get_symbol_filters(self, symbol: str) -> dict:
+        """Return filter dict for symbol.
+
+        Priority: instance cache (populated by load_exchange_filters at startup)
+        → class-level cache (shared across instances) → live API fetch.
+        """
+        if symbol in self._symbol_filters:
+            return self._symbol_filters[symbol]
+        if symbol in self.__class__._symbol_filters_cache:
+            return self.__class__._symbol_filters_cache[symbol]
+        # Lazy fetch — only reached when bulk load failed or symbol is new
+        defaults = {
+            "step_size": 0.001, "tick_size": 0.01,
+            "min_qty": 0.001, "min_notional": 5.0,
+            "qty_dec": 3, "price_dec": 2,
+        }
+        try:
+            resp = await self._get("/fapi/v1/exchangeInfo", {"symbol": symbol})
+            for sym_info in resp.get("symbols", []):
+                if sym_info["symbol"] == symbol:
+                    filt = {f["filterType"]: f for f in sym_info.get("filters", [])}
+                    step = float(filt.get("LOT_SIZE", {}).get("stepSize", "0.001"))
+                    tick = float(filt.get("PRICE_FILTER", {}).get("tickSize", "0.01"))
+                    result = {
+                        "step_size":    step,
+                        "tick_size":    tick,
+                        "min_qty":      float(filt.get("LOT_SIZE", {}).get("minQty", "0.001")),
+                        "min_notional": float(filt.get("MIN_NOTIONAL", {}).get("notional", "5.0")),
+                        "qty_dec":      _decimals(step),
+                        "price_dec":    _decimals(tick),
+                    }
+                    # Populate both caches so subsequent calls skip the HTTP round-trip
+                    self._symbol_filters[symbol] = result
+                    self.__class__._symbol_filters_cache[symbol] = result
+                    return result
+        except Exception as e:
+            logger.warning("Failed to fetch symbol filters for {}: {}", symbol, e)
+        return defaults
+
+    @staticmethod
+    def _round_to_step(value: float, step: float) -> float:
+        """Floor value DOWN to nearest multiple of step."""
+        return _floor_to_step(value, step)
+
+    async def _apply_filters(
+        self, symbol: str, qty: float, price: float
+    ) -> Tuple[float, float]:
+        """Round qty and price to exchange-compliant precision.
+
+        Returns (qty, price) where qty is floored to stepSize (≥ minQty)
+        and price is rounded to tickSize.
+        """
+        f = await self._get_symbol_filters(symbol)
+        rounded_qty = _floor_to_step(qty, f["step_size"])
+        rounded_qty = round(max(rounded_qty, f["min_qty"]), f["qty_dec"])
+        rounded_price = _round_to_tick(price, f["tick_size"])
+        return rounded_qty, rounded_price
+
     # ── API key validation ─────────────────────────────────────────────────────
     async def validate_api_key(self) -> bool:
         """Verify the configured API key works by fetching account balance."""
@@ -328,24 +388,36 @@ class BinanceExecutor:
             return result
 
         try:
+            # Apply exchange precision rules before any order placement
+            quantity, entry_price = await self._apply_filters(
+                params.symbol, params.quantity, params.entry_price
+            )
+            if quantity <= 0:
+                logger.error("Quantity rounds to 0 for {}, aborting trade", params.symbol)
+                result["status"] = "error"
+                result["error"]  = "quantity rounds to 0 after filter application"
+                return result
+            _, stop_loss  = await self._apply_filters(params.symbol, quantity, params.stop_loss)
+            _, take_profit = await self._apply_filters(params.symbol, quantity, params.take_profit)
+
             # Enforce isolated margin before setting leverage or opening position
             await self.set_margin_mode(params.symbol, "ISOLATED")
             await self.set_leverage(params.symbol, params.leverage)
 
             order = await self.place_market_order(
-                params.symbol, side, params.quantity
+                params.symbol, side, quantity
             )
             result["order_id"]    = order.get("orderId")
-            result["fill_price"]  = float(order.get("avgPrice") or params.entry_price)
+            result["fill_price"]  = float(order.get("avgPrice") or entry_price)
             result["entry_order"] = order
 
             sl_order = await self.place_stop_loss(
-                params.symbol, side, params.quantity, params.stop_loss
+                params.symbol, side, quantity, stop_loss
             )
             result["sl_order_id"] = sl_order.get("orderId")
 
             tp_order = await self.place_take_profit(
-                params.symbol, side, params.quantity, params.take_profit
+                params.symbol, side, quantity, take_profit
             )
             result["tp_order_id"] = tp_order.get("orderId")
 
@@ -474,6 +546,7 @@ class BinanceExecutor:
 class BybitExecutor:
     BASE      = "https://api.bybit.com"
     BASE_TEST = "https://api-testnet.bybit.com"
+    _symbol_filters_cache: dict = {}  # class-level cache shared across all instances
 
     def __init__(self) -> None:
         self._key    = settings.bybit_api_key
@@ -635,6 +708,68 @@ class BybitExecutor:
             )
         return ok
 
+    # ── Lazy per-symbol filter fetch (fallback when bulk load missed a symbol) ──
+    async def _get_symbol_filters(self, symbol: str) -> dict:
+        """Return filter dict for symbol.
+
+        Priority: instance cache (populated by load_exchange_filters at startup)
+        → class-level cache (shared across instances) → live Bybit API fetch.
+        """
+        if symbol in self._symbol_filters:
+            return self._symbol_filters[symbol]
+        if symbol in self.__class__._symbol_filters_cache:
+            return self.__class__._symbol_filters_cache[symbol]
+        defaults = {
+            "step_size": 0.001, "tick_size": 0.01,
+            "min_qty": 0.001, "min_notional": 5.0,
+            "qty_dec": 3, "price_dec": 2,
+        }
+        try:
+            resp = await self._get(
+                "/v5/market/instruments-info",
+                {"category": "linear", "symbol": symbol},
+            )
+            items = resp.get("result", {}).get("list", [])
+            if items:
+                item      = items[0]
+                lot_size  = item.get("lotSizeFilter", {})
+                price_flt = item.get("priceFilter", {})
+                step = float(lot_size.get("qtyStep", "0.001"))
+                tick = float(price_flt.get("tickSize", "0.01"))
+                result = {
+                    "step_size":    step,
+                    "tick_size":    tick,
+                    "min_qty":      float(lot_size.get("minOrderQty", "0.001")),
+                    "min_notional": float(lot_size.get("minOrderAmt", "5.0")),
+                    "qty_dec":      _decimals(step),
+                    "price_dec":    _decimals(tick),
+                }
+                self._symbol_filters[symbol] = result
+                self.__class__._symbol_filters_cache[symbol] = result
+                return result
+        except Exception as e:
+            logger.warning("Failed to fetch Bybit symbol filters for {}: {}", symbol, e)
+        return defaults
+
+    @staticmethod
+    def _round_to_step(value: float, step: float) -> float:
+        """Floor value DOWN to nearest multiple of step."""
+        return _floor_to_step(value, step)
+
+    async def _apply_filters(
+        self, symbol: str, qty: float, price: float
+    ) -> Tuple[float, float]:
+        """Round qty and price to exchange-compliant precision.
+
+        Returns (qty, price) where qty is floored to qtyStep (≥ minOrderQty)
+        and price is rounded to tickSize.
+        """
+        f = await self._get_symbol_filters(symbol)
+        rounded_qty = _floor_to_step(qty, f["step_size"])
+        rounded_qty = round(max(rounded_qty, f["min_qty"]), f["qty_dec"])
+        rounded_price = _round_to_tick(price, f["tick_size"])
+        return rounded_qty, rounded_price
+
     # ── Margin mode ───────────────────────────────────────────────────────────
     async def set_margin_mode(self, symbol: str, mode: str = "ISOLATED_MARGIN") -> None:
         """
@@ -677,13 +812,21 @@ class BybitExecutor:
             return result
 
         try:
+            # Apply exchange precision rules before any order placement
+            qty, _ = await self._apply_filters(
+                params.symbol, params.quantity, params.entry_price
+            )
+            if qty <= 0:
+                logger.error("Quantity rounds to 0 for {}, aborting trade", params.symbol)
+                result["status"] = "error"
+                result["error"]  = "quantity rounds to 0 after filter application"
+                return result
+            _, sl = await self._apply_filters(params.symbol, qty, params.stop_loss)
+            _, tp = await self._apply_filters(params.symbol, qty, params.take_profit)
+
             # Enforce isolated margin, then set leverage
             await self.set_margin_mode(params.symbol, "ISOLATED_MARGIN")
             await self.set_leverage(params.symbol, params.leverage)
-
-            qty   = self._round_qty(params.symbol, params.quantity)
-            sl    = self._round_price(params.symbol, params.stop_loss)
-            tp    = self._round_price(params.symbol, params.take_profit)
 
             body = {
                 "category":    "linear",

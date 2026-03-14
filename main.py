@@ -47,6 +47,7 @@ from utils.logger import setup_logger
 from data_engine.market_data import MarketDataEngine
 from data_engine.websocket_feed import BinanceWebSocketFeed, MarketCache
 from data_engine.coin_database import CoinDatabase
+from data_engine.external_data import ExternalDataFetcher
 
 from scanners.market_scanner import MarketScanner
 from scanners.research_engine import ResearchEngine
@@ -114,6 +115,9 @@ class TradingSystem:
         self._alerts = AlertSystem()
         self._sentiment = SentimentAnalyzer()
         self._arb = ArbitrageEngine(self._data_engine)
+        self._external = ExternalDataFetcher(
+            cryptopanic_api_key=settings.cryptopanic_api_key
+        )
 
         # AI self-learning and ranking
         self._learner = SelfLearningEngine()
@@ -184,6 +188,7 @@ class TradingSystem:
         await self._alerts.start()
         self._alerts.set_command_handler(self._handle_telegram_command)
         await self._sentiment.start()
+        await self._external.start()
         await self._binance_exec.start()
         await self._bybit_exec.start()
 
@@ -322,6 +327,7 @@ class TradingSystem:
         await self._data_engine.stop()
         await self._alerts.stop()
         await self._sentiment.stop()
+        await self._external.stop()
         await self._binance_exec.stop()
         await self._bybit_exec.stop()
         await self._portfolio.stop()
@@ -609,8 +615,10 @@ class TradingSystem:
                             )
                             self._klines_cache[signal.symbol] = df
                         ml_score, confidence = self._ml.predict(df, context={
-                            "signal_score": signal.score,
-                            "direction":    signal.direction,
+                            "signal_score":  signal.score,
+                            "direction":     signal.direction,
+                            "funding_rate":  self._scanner.get_last_funding_cache().get(signal.symbol, 0.0),
+                            "oi_delta_pct":  0.0,  # populated later via research context
                         })
                         signal.score += ml_score
                         signal.ai_prediction = confidence
@@ -705,8 +713,34 @@ class TradingSystem:
                             logger.info(
                                 "🔬 Research start: {} | score={}", signal.symbol, signal.score
                             )
+
+                            # Build external context for research engine
+                            research_context: dict = {
+                                "funding_rate": self._scanner.get_last_funding_cache().get(signal.symbol, 0.0),
+                            }
+                            # Fear & Greed Index (free, cached 1h)
+                            if settings.fear_greed_enabled:
+                                try:
+                                    fg = await self._external.get_fear_greed_index()
+                                    if fg:
+                                        research_context["fear_greed_value"] = fg.value
+                                except Exception:
+                                    pass
+                            # Liquidation cluster proximity
+                            if settings.liquidation_data_enabled:
+                                try:
+                                    clusters = await self._external.get_binance_liquidations(signal.symbol)
+                                    dist = self._external.get_nearest_liquidation_level(
+                                        signal.price, clusters, signal.direction
+                                    )
+                                    if dist is not None:
+                                        research_context["liq_distance_pct"] = dist
+                                except Exception:
+                                    pass
+
                             result = await self._research.research(
-                                signal.symbol, signal.direction, signal.score
+                                signal.symbol, signal.direction, signal.score,
+                                context=research_context
                             )
                             research_id = await self._coin_db.record_research(
                                 symbol=signal.symbol,
