@@ -91,6 +91,7 @@ class PendingEntry:
     research_id: Optional[int]
     research_score: float
     strategy_name: Optional[str]
+    mtf_alignment: float = 0.5       # fraction of TFs agreeing (stored for ML context)
     limit_price: float = 0.0  # target fill price (used for dry-run simulation)
 
 
@@ -709,6 +710,7 @@ class TradingSystem:
                                     signal,
                                     research_id=research_id,
                                     research_score=result.score,
+                                    mtf_alignment=result.mtf_alignment,
                                 )
                             else:
                                 logger.info(
@@ -752,6 +754,7 @@ class TradingSystem:
         signal,
         research_id: Optional[int] = None,
         research_score: float = 0.0,
+        mtf_alignment: float = 0.5,
     ) -> None:
         # Per-symbol duplicate guard — never open two concurrent positions on the same coin
         if signal.symbol in self._position_meta or signal.symbol in self._pending_entry_orders:
@@ -900,6 +903,7 @@ class TradingSystem:
                 research_score=research_score,
                 strategy_name=strategy_name,
                 limit_price=limit_price,
+                mtf_alignment=mtf_alignment,
             )
             # Reserve margin immediately so concurrent signals don't size against
             # the same free balance. Released when this order fills (teardown) or
@@ -1001,7 +1005,16 @@ class TradingSystem:
             df_cached = self._klines_cache.get(risk_params.symbol)
             if df_cached is not None and len(df_cached) >= 50:
                 ml_key = f"{risk_params.symbol}_{trade_id}"
-                self._learner.record_prediction(ml_key, risk_params.symbol, df_cached)
+                # Pass trade-quality context so XGBoost can learn signal quality → outcome
+                ml_context = {
+                    "signal_score":   signal.score,
+                    "research_score": research_score,
+                    "mtf_alignment":  mtf_alignment,
+                    "direction":      signal.direction,
+                    "rr_ratio":       setup.risk_reward if setup else 2.0,
+                    "strategy":       strategy_name or "FALLBACK",
+                }
+                self._learner.record_prediction(ml_key, risk_params.symbol, df_cached, context=ml_context)
                 self._pending_labels[risk_params.symbol] = ml_key
 
         if trade_id and research_id:
@@ -1369,7 +1382,17 @@ class TradingSystem:
                             df_cached = self._klines_cache.get(symbol)
                             if df_cached is not None and len(df_cached) >= 50:
                                 ml_key = f"{symbol}_{trade_id}"
-                                self._learner.record_prediction(ml_key, symbol, df_cached)
+                                rp = pending.risk_params
+                                _rr = abs(rp.take_profit - rp.entry_price) / max(abs(rp.entry_price - rp.stop_loss), 1e-9)
+                                ml_context = {
+                                    "signal_score":   pending.signal.score,
+                                    "research_score": pending.research_score,
+                                    "mtf_alignment":  pending.mtf_alignment,
+                                    "direction":      pending.signal.direction,
+                                    "rr_ratio":       round(_rr, 2),
+                                    "strategy":       pending.strategy_name or "FALLBACK",
+                                }
+                                self._learner.record_prediction(ml_key, symbol, df_cached, context=ml_context)
                                 self._pending_labels[symbol] = ml_key
                             if pending.research_id:
                                 await self._coin_db.mark_research_executed(

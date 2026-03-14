@@ -45,6 +45,18 @@ _LEGACY_STATS_FILE   = MODEL_DIR / "coin_stats.json"
 
 RETRAIN_EVERY = 50
 
+# Numeric ID for each strategy (used as a normalised context feature)
+_STRATEGY_IDS: dict = {
+    "FALLBACK": 0,
+    "TREND_FOLLOW": 1, "TREND": 1,
+    "BREAKOUT": 2,
+    "LIQUIDITY_SWEEP": 3, "LIQUIDITY": 3,
+    "MOMENTUM": 4,
+    "MEAN_REVERSION": 5,
+    "SCALP_BB": 6, "SCALP": 6,
+}
+_NUM_STRATEGIES = 6   # denominator for normalisation
+
 
 class SelfLearningEngine:
     """Collects labelled trade outcomes and periodically retrains XGBoost + LSTM.
@@ -144,26 +156,55 @@ class SelfLearningEngine:
             logger.error("SelfLearning.initialize error (DB not available?): {}", exc)
 
     # ── Core learning methods ─────────────────────────────────────────────────
-    def record_prediction(self, trade_id: str, symbol: str, df: pd.DataFrame) -> None:
+    def record_prediction(
+        self,
+        trade_id: str,
+        symbol: str,
+        df: pd.DataFrame,
+        context: dict | None = None,
+    ) -> None:
         """Store feature vector (for XGBoost) and sequence (for LSTM) when signal fires.
+
+        ``context`` carries trade-quality metadata that price-only indicators can't
+        capture.  Keys (all optional, sensible defaults applied):
+          signal_score   int  0-18  — raw scanner total score
+          research_score float 0-10 — deep-research normalised score
+          mtf_alignment  float 0-1  — fraction of TFs agreeing
+          direction      str  LONG/SHORT
+          rr_ratio       float       — setup risk/reward
+          strategy       str         — strategy name (see _STRATEGY_IDS)
+
         XGBoost flat vector is persisted to DB. LSTM sequence is memory-only.
         """
         try:
             features = build_features(df)
             fvec = features.iloc[-1].values.astype(np.float32)   # flat, for XGBoost
             seq  = features.values[-60:].astype(np.float32)       # 60-row, for LSTM
+
+            # Append 6 context features so XGBoost can learn signal quality → outcome
+            ctx = context or {}
+            ctx_vec = np.array([
+                min(ctx.get("signal_score", 7), 18) / 18.0,
+                ctx.get("research_score", 5.0) / 10.0,
+                float(ctx.get("mtf_alignment", 0.5)),
+                1.0 if ctx.get("direction", "LONG") == "LONG" else 0.0,
+                min(float(ctx.get("rr_ratio", 2.0)), 4.0) / 4.0,
+                _STRATEGY_IDS.get(str(ctx.get("strategy", "FALLBACK")).upper(), 0) / _NUM_STRATEGIES,
+            ], dtype=np.float32)
+            fvec_enriched = np.concatenate([fvec, ctx_vec])
+
             self._pending[trade_id] = {
                 "symbol":   symbol,
-                "features": fvec,
+                "features": fvec_enriched,
                 "seq":      seq,   # stored in-memory; not persisted (too large for DB)
                 "ts":       datetime.utcnow().isoformat(),
             }
-            # Async background save to DB (XGBoost flat vector only)
+            # Async background save to DB (enriched flat vector only)
             if self._db is not None:
                 try:
                     loop = asyncio.get_running_loop()
                     loop.create_task(
-                        self._db.save_ml_sample(trade_id, symbol, fvec.tolist()),
+                        self._db.save_ml_sample(trade_id, symbol, fvec_enriched.tolist()),
                         name=f"save_ml_{trade_id}",
                     )
                 except RuntimeError:
@@ -179,7 +220,7 @@ class SelfLearningEngine:
         if pending is None:
             return
 
-        label = 1 if pnl >= 0 else 0   # breakeven treated as win, not loss
+        label = 1 if pnl >= 0.3 else 0   # require 0.3% net gain; breakeven / micro-wins count as loss
         self._samples_X.append(pending["features"])
         self._samples_y.append(label)
         # Register LSTM sequence only when a full 60-bar history was available.
