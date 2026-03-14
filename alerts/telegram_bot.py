@@ -209,6 +209,15 @@ class AlertSystem:
             return_exceptions=True,
         )
 
+    async def send_critical_error(self, title: str, detail: str) -> None:
+        """Send a critical error alert to Telegram/Discord with a distinctive format."""
+        msg = (
+            f"🔴 <b>CRITICAL ERROR — {self._esc(title)}</b>\n\n"
+            f"<code>{self._esc(detail[:400])}</code>\n\n"
+            f"⚠️ Bot may require manual intervention."
+        )
+        await self.send_text(msg)
+
     @staticmethod
     def _esc(s) -> str:
         """HTML-escape a value so it's safe inside Telegram HTML messages."""

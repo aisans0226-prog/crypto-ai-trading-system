@@ -238,6 +238,14 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
 .bcfg-toggle input:checked+.bcfg-sw{background:var(--accent)}
 .bcfg-toggle input:checked+.bcfg-sw::after{left:20px}
 .bcfg-toggle strong{font-size:.8rem;color:var(--txt)}
+/* System health cards */
+.health-card{background:var(--bg3);border:1px solid var(--border);border-radius:9px;padding:14px 16px;display:flex;flex-direction:column;gap:4px;transition:border-color .2s}
+.health-card.ok{border-color:rgba(16,185,129,.4)}
+.health-card.warn{border-color:rgba(251,191,36,.4)}
+.health-card.error{border-color:rgba(255,68,102,.4)}
+.hc-icon{font-size:1.3rem;line-height:1}
+.hc-label{font-size:.72rem;color:var(--mut);text-transform:uppercase;letter-spacing:.05em;font-weight:600}
+.hc-msg{font-size:.77rem;color:var(--txt);margin-top:2px}
 </style>
 </head>
 <body>
@@ -332,6 +340,10 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
       Performance
     </a>
     <div class="ns">System</div>
+    <a onclick="goto('exchange')" data-p="exchange">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      Exchange Keys
+    </a>
     <a onclick="goto('system')" data-p="system">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 010 14.14M4.93 4.93a10 10 0 000 14.14"/></svg>
       System &amp; Update
@@ -349,6 +361,7 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
   </div>
   <div class="hr2">
     <div class="sbg"><div class="sd" id="wdot"></div><span id="wst">Connecting</span></div>
+    <div id="mode-badge" style="display:none;padding:4px 10px;border-radius:20px;font-size:.71rem;font-weight:700;letter-spacing:.04em"></div>
     <button class="btn bp bsm" onclick="rAll()">Refresh</button>
   </div>
 </header>
@@ -395,6 +408,7 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
     <div class="bsi"><span class="bsl">Uptime</span><span class="bsv" id="bst-up">--</span></div>
     <div class="bsi" style="margin-left:auto">
       <button id="bot-toggle-btn" onclick="toggleBot()" style="padding:5px 14px;border-radius:6px;border:none;font-size:.75rem;font-weight:700;cursor:pointer;transition:.2s;background:var(--grn);color:#fff">▶ Running</button>
+      <button onclick="emergencyKill()" style="padding:5px 12px;border-radius:6px;border:none;font-size:.74rem;font-weight:700;cursor:pointer;background:var(--red);color:#fff;margin-left:6px" title="Emergency Kill: pause + cancel pending + close all">🔴 Kill</button>
     </div>
   </div>
   <div class="cg">
@@ -633,8 +647,91 @@ header{height:var(--hdr);background:var(--bg2);border-bottom:1px solid var(--bor
   </div>
 </div>
 
+<!-- EXCHANGE KEYS PAGE -->
+<div class="page" id="page-exchange">
+  <div class="card fw" style="margin-bottom:13px">
+    <div class="ch"><span class="ct2">Exchange API Keys</span><span style="font-size:.68rem;color:var(--mut)">Keys are stored in .env on the server — never sent back to browser</span></div>
+    <!-- Tabs -->
+    <div style="display:flex;gap:6px;margin-bottom:16px">
+      <button class="bcfg-tb ac" id="exc-tab-bn" onclick="excTab('binance')">Binance</button>
+      <button class="bcfg-tb" id="exc-tab-bb" onclick="excTab('bybit')">Bybit</button>
+    </div>
+    <!-- Binance section -->
+    <div id="exc-binance">
+      <div style="padding:11px 14px;background:rgba(251,191,36,.06);border:1px solid rgba(251,191,36,.25);border-radius:8px;font-size:.74rem;color:var(--yel);margin-bottom:14px">
+        ⚠️ Binance Futures API: requires <b>Futures Trading</b> permission. Do NOT enable Withdrawals. Whitelist your VPS IP for security.
+      </div>
+      <div class="bcfg-grid">
+        <div class="bcfg-fld"><label>API Key</label>
+          <div style="position:relative">
+            <input type="password" id="exc-bn-key" placeholder="Enter Binance API Key (or leave blank to keep current)" style="width:100%;background:var(--bg3);color:var(--txt);border:1px solid var(--border);padding:7px 36px 7px 10px;border-radius:7px;font-size:.82rem;outline:none"/>
+            <button onclick="togglePwd('exc-bn-key')" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--mut);cursor:pointer;font-size:.75rem">👁</button>
+          </div>
+          <div class="bcfg-hint" id="exc-bn-key-preview"></div>
+        </div>
+        <div class="bcfg-fld"><label>API Secret</label>
+          <div style="position:relative">
+            <input type="password" id="exc-bn-secret" placeholder="Enter Binance API Secret" style="width:100%;background:var(--bg3);color:var(--txt);border:1px solid var(--border);padding:7px 36px 7px 10px;border-radius:7px;font-size:.82rem;outline:none"/>
+            <button onclick="togglePwd('exc-bn-secret')" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--mut);cursor:pointer;font-size:.75rem">👁</button>
+          </div>
+        </div>
+      </div>
+      <div style="margin-top:10px">
+        <label class="bcfg-toggle" style="max-width:320px"><input type="checkbox" id="exc-bn-testnet"/><span class="bcfg-sw"></span><div><strong>Use Binance Testnet</strong><div class="bcfg-hint">Sandbox — safe for testing. Disable for real money.</div></div></label>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:14px;align-items:center">
+        <button class="btn bo" onclick="testExcKey('binance')" style="padding:8px 18px">🔌 Test Connection</button>
+        <button class="btn bp" onclick="saveExcKey('binance')" style="padding:8px 18px">💾 Save</button>
+        <span id="exc-bn-msg" style="font-size:.77rem;margin-left:4px"></span>
+      </div>
+    </div>
+    <!-- Bybit section -->
+    <div id="exc-bybit" style="display:none">
+      <div style="padding:11px 14px;background:rgba(251,191,36,.06);border:1px solid rgba(251,191,36,.25);border-radius:8px;font-size:.74rem;color:var(--yel);margin-bottom:14px">
+        ⚠️ Bybit Linear Perpetual API: requires <b>Contract Trading</b> permission. Only enable <b>Read + Trade</b>. Never enable Withdrawals.
+      </div>
+      <div class="bcfg-grid">
+        <div class="bcfg-fld"><label>API Key</label>
+          <div style="position:relative">
+            <input type="password" id="exc-bb-key" placeholder="Enter Bybit API Key" style="width:100%;background:var(--bg3);color:var(--txt);border:1px solid var(--border);padding:7px 36px 7px 10px;border-radius:7px;font-size:.82rem;outline:none"/>
+            <button onclick="togglePwd('exc-bb-key')" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--mut);cursor:pointer;font-size:.75rem">👁</button>
+          </div>
+          <div class="bcfg-hint" id="exc-bb-key-preview"></div>
+        </div>
+        <div class="bcfg-fld"><label>API Secret</label>
+          <div style="position:relative">
+            <input type="password" id="exc-bb-secret" placeholder="Enter Bybit API Secret" style="width:100%;background:var(--bg3);color:var(--txt);border:1px solid var(--border);padding:7px 36px 7px 10px;border-radius:7px;font-size:.82rem;outline:none"/>
+            <button onclick="togglePwd('exc-bb-secret')" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--mut);cursor:pointer;font-size:.75rem">👁</button>
+          </div>
+        </div>
+      </div>
+      <div style="margin-top:10px">
+        <label class="bcfg-toggle" style="max-width:320px"><input type="checkbox" id="exc-bb-testnet"/><span class="bcfg-sw"></span><div><strong>Use Bybit Testnet</strong><div class="bcfg-hint">Sandbox — safe for testing.</div></div></label>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:14px;align-items:center">
+        <button class="btn bo" onclick="testExcKey('bybit')" style="padding:8px 18px">🔌 Test Connection</button>
+        <button class="btn bp" onclick="saveExcKey('bybit')" style="padding:8px 18px">💾 Save</button>
+        <span id="exc-bb-msg" style="font-size:.77rem;margin-left:4px"></span>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- SYSTEM PAGE -->
 <div class="page" id="page-system">
+  <!-- System Health Panel -->
+  <div class="card fw" style="margin-bottom:13px">
+    <div class="ch">
+      <span class="ct2">System Health</span>
+      <button class="btn bo bsm" onclick="rHealth()">Refresh</button>
+    </div>
+    <div id="health-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px">
+      <div class="health-card" id="hc-redis"><div class="hc-icon">🔴</div><div class="hc-label">Redis</div><div class="hc-msg">--</div></div>
+      <div class="health-card" id="hc-db"><div class="hc-icon">🔴</div><div class="hc-label">PostgreSQL</div><div class="hc-msg">--</div></div>
+      <div class="health-card" id="hc-binance"><div class="hc-icon">🔴</div><div class="hc-label">Binance API</div><div class="hc-msg">--</div></div>
+      <div class="health-card" id="hc-bybit"><div class="hc-icon">🔴</div><div class="hc-label">Bybit API</div><div class="hc-msg">--</div></div>
+    </div>
+  </div>
   <!-- Row 1: Version + (spacer taking ~half width) -->
   <div class="tc" style="margin-bottom:13px">
     <div class="card">
@@ -1144,7 +1241,8 @@ async function lP(pg){
   else if(pg==='trades')await lTr();
   else if(pg==='history')await lHistory();
   else if(pg==='performance')await lPf();
-  else if(pg==='system')await lSy();
+  else if(pg==='exchange')await lExchange();
+  else if(pg==='system'){await rHealth();await lSy();}
 }
 
 function tSB(){document.getElementById('sb').classList.toggle('open');document.getElementById('ov').classList.toggle('show');}
@@ -1394,6 +1492,27 @@ function uBotStatus(d){
   // Color mode badge
   var mEl=document.getElementById('bst-mode');
   if(mEl)mEl.className='bsv '+(d.training_mode?'badge-yel':d.dry_run?'badge-acc':'badge-green');
+  // Header LIVE / TESTNET badge
+  var hBadge=document.getElementById('mode-badge');
+  if(hBadge){
+    if(d.training_mode){
+      hBadge.textContent='🧪 TRAINING'; hBadge.style.background='rgba(251,191,36,.18)';
+      hBadge.style.color='var(--yel)'; hBadge.style.border='1px solid rgba(251,191,36,.4)';
+      hBadge.style.display='inline-block';
+    } else if(d.dry_run){
+      hBadge.textContent='DRY RUN'; hBadge.style.background='rgba(59,130,246,.18)';
+      hBadge.style.color='var(--a2)'; hBadge.style.border='1px solid rgba(59,130,246,.4)';
+      hBadge.style.display='inline-block';
+    } else if(d.binance_testnet||d.bybit_testnet){
+      hBadge.textContent='⚡ TESTNET'; hBadge.style.background='rgba(251,191,36,.18)';
+      hBadge.style.color='var(--yel)'; hBadge.style.border='1px solid rgba(251,191,36,.5)';
+      hBadge.style.display='inline-block';
+    } else {
+      hBadge.textContent='🟢 LIVE'; hBadge.style.background='rgba(16,185,129,.18)';
+      hBadge.style.color='var(--grn)'; hBadge.style.border='1px solid rgba(16,185,129,.5)';
+      hBadge.style.display='inline-block';
+    }
+  }
   // Update bot toggle button
   var btn=document.getElementById('bot-toggle-btn');
   if(btn){
@@ -2748,6 +2867,124 @@ async function doReset(){
   }finally{
     btn.disabled=false;btn.textContent='Xác nhận Reset';
   }
+}
+
+// ── Emergency Kill ──────────────────────────────────────────────────────────
+async function emergencyKill(){
+  if(!confirm('🔴 EMERGENCY KILL\n\nThis will:\n• Pause the bot\n• Cancel ALL pending LIMIT orders\n• Force-close ALL open positions at market price\n\nConfirm?'))return;
+  try{
+    var r=await ap('/api/positions/emergency-kill','POST');
+    if(r.ok){
+      toast('🔴 Emergency Kill executed — all positions closed, bot paused','err');
+    } else {
+      toast('Emergency Kill failed: '+(r.error||'unknown'),'err');
+    }
+  }catch(e){toast('Emergency Kill error: '+e.message,'err');}
+}
+
+// ── System Health ───────────────────────────────────────────────────────────
+async function rHealth(){
+  try{
+    var d=await ap('/api/system-health');
+    function setCard(id,key){
+      var el=document.getElementById('hc-'+id);
+      if(!el)return;
+      var s=d[key]||{};
+      var status=s.status||'error';
+      var icons={ok:'🟢',warn:'🟡',error:'🔴'};
+      el.className='health-card '+status;
+      el.querySelector('.hc-icon').textContent=icons[status]||'🔴';
+      var msg=s.message||'--';
+      if(s.testnet!==undefined)msg+=' ('+(s.testnet?'Testnet':'Mainnet')+')';
+      el.querySelector('.hc-msg').textContent=msg;
+    }
+    setCard('redis','redis'); setCard('db','db');
+    setCard('binance','binance'); setCard('bybit','bybit');
+  }catch(e){console.error('rHealth:',e);}
+}
+
+// ── Exchange Key Config ─────────────────────────────────────────────────────
+async function lExchange(){
+  try{
+    var d=await ap('/api/exchange-config');
+    var el;
+    el=document.getElementById('exc-bn-key-preview');
+    if(el)el.textContent=d.binance_key_set?'Current key: '+d.binance_key_preview:'No key set';
+    el=document.getElementById('exc-bb-key-preview');
+    if(el)el.textContent=d.bybit_key_set?'Current key: '+d.bybit_key_preview:'No key set';
+    el=document.getElementById('exc-bn-testnet');
+    if(el)el.checked=!!d.binance_testnet;
+    el=document.getElementById('exc-bb-testnet');
+    if(el)el.checked=!!d.bybit_testnet;
+    el=document.getElementById('exc-bn-key');if(el)el.value='';
+    el=document.getElementById('exc-bn-secret');if(el)el.value='';
+    el=document.getElementById('exc-bb-key');if(el)el.value='';
+    el=document.getElementById('exc-bb-secret');if(el)el.value='';
+    excTab(d.active_exchange||'binance');
+  }catch(e){console.error('lExchange:',e);}
+}
+
+function excTab(ex){
+  document.getElementById('exc-binance').style.display=ex==='binance'?'block':'none';
+  document.getElementById('exc-bybit').style.display=ex==='bybit'?'block':'none';
+  document.getElementById('exc-tab-bn').classList.toggle('ac',ex==='binance');
+  document.getElementById('exc-tab-bb').classList.toggle('ac',ex==='bybit');
+}
+
+async function testExcKey(ex){
+  var keyId='exc-'+(ex==='binance'?'bn':'bb')+'-key';
+  var secId='exc-'+(ex==='binance'?'bn':'bb')+'-secret';
+  var msgId='exc-'+(ex==='binance'?'bn':'bb')+'-msg';
+  var msgEl=document.getElementById(msgId);
+  var key=document.getElementById(keyId).value.trim();
+  var sec=document.getElementById(secId).value.trim();
+  var testnet=document.getElementById('exc-'+(ex==='binance'?'bn':'bb')+'-testnet').checked;
+  if(!key||!sec){if(msgEl)msgEl.textContent='⚠ Enter API Key and Secret to test';return;}
+  if(msgEl)msgEl.textContent='Testing...';
+  try{
+    var r=await ap('/api/exchange-config/test','POST',{exchange:ex,api_key:key,api_secret:sec,testnet:testnet});
+    if(msgEl){
+      msgEl.textContent=r.success?'✅ '+r.message:'❌ '+r.message;
+      msgEl.style.color=r.success?'var(--grn)':'var(--red)';
+    }
+  }catch(e){if(msgEl){msgEl.textContent='❌ '+e.message;msgEl.style.color='var(--red)';}}
+}
+
+async function saveExcKey(ex){
+  var keyId='exc-'+(ex==='binance'?'bn':'bb')+'-key';
+  var secId='exc-'+(ex==='binance'?'bn':'bb')+'-secret';
+  var msgId='exc-'+(ex==='binance'?'bn':'bb')+'-msg';
+  var msgEl=document.getElementById(msgId);
+  var key=document.getElementById(keyId).value.trim();
+  var sec=document.getElementById(secId).value.trim();
+  var testnet=document.getElementById('exc-'+(ex==='binance'?'bn':'bb')+'-testnet').checked;
+  if(msgEl)msgEl.textContent='Saving...';
+  try{
+    var r=await ap('/api/exchange-config/save','POST',{exchange:ex,api_key:key,api_secret:sec,testnet:testnet});
+    if(msgEl){
+      msgEl.textContent=r.success?'✅ '+r.message:'❌ '+r.message;
+      msgEl.style.color=r.success?'var(--grn)':'var(--red)';
+    }
+    if(r.success&&r.restart_required)toast('API keys saved — restart required to apply keys','inf');
+    else if(r.success)toast('Testnet flag updated','ok');
+    await lExchange();  // reload preview
+  }catch(e){if(msgEl){msgEl.textContent='❌ '+e.message;msgEl.style.color='var(--red)';}}
+}
+
+function togglePwd(id){
+  var el=document.getElementById(id);
+  if(el)el.type=el.type==='password'?'text':'password';
+}
+
+// ── ap helper with POST body support ───────────────────────────────────────
+// (If ap already supports body, this is a no-op. Otherwise patch.)
+var _apOrig=typeof ap==='function'?ap:null;
+if(_apOrig){
+  ap=async function(url,method,body){
+    if(!method||method==='GET')return _apOrig(url);
+    var r=await fetch(url,{method:method||'POST',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
+    return r.json();
+  };
 }
 </script>
 </body>

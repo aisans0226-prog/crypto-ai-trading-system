@@ -76,6 +76,8 @@ def _make_bot_status_payload() -> dict:
         "signals_in_memory":  len(state.recent_signals),
         "training_mode":      _cfg.training_mode,
         "dry_run":            getattr(_cfg, "dry_run", False),
+        "binance_testnet":    getattr(_cfg, "binance_testnet", False),
+        "bybit_testnet":      getattr(_cfg, "bybit_testnet", False),
         "score_threshold":    _cfg.effective_signal_score_threshold,
         "max_daily_trades":   _cfg.effective_max_daily_trades,
         "is_paused":          getattr(state.trading_system, "is_paused", False) if state.trading_system else False,
@@ -104,7 +106,53 @@ async def broadcast(event: str, payload: dict) -> None:
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "ts": datetime.utcnow().isoformat()}
+    """Deep health check — returns status per subsystem for process monitors."""
+    import aiohttp as _aiohttp
+    checks: dict = {}
+
+    # PostgreSQL
+    try:
+        if state.portfolio_manager and hasattr(state.portfolio_manager, "_db"):
+            async with state.portfolio_manager._db.connect() as conn:
+                await conn.execute("SELECT 1")
+            checks["db"] = "ok"
+        else:
+            checks["db"] = "not_started"
+    except Exception as exc:
+        checks["db"] = f"error: {exc}"
+
+    # Redis
+    try:
+        ts = getattr(state, "trading_system", None)
+        redis = getattr(ts, "_redis", None) if ts else None
+        if redis:
+            await redis.ping()
+            checks["redis"] = "ok"
+        else:
+            checks["redis"] = "unavailable"
+    except Exception as exc:
+        checks["redis"] = f"error: {exc}"
+
+    # Exchange API reachability (lightweight public endpoint)
+    try:
+        base = (
+            "https://testnet.binancefuture.com"
+            if getattr(settings, "binance_testnet", False)
+            else "https://fapi.binance.com"
+        )
+        async with _aiohttp.ClientSession() as sess:
+            async with sess.get(f"{base}/fapi/v1/ping", timeout=_aiohttp.ClientTimeout(total=3)) as r:
+                checks["exchange"] = "ok" if r.status == 200 else f"http_{r.status}"
+    except Exception as exc:
+        checks["exchange"] = f"unreachable: {exc}"
+
+    all_ok = all(v == "ok" or v == "not_started" or v == "unavailable" for v in checks.values())
+    return {
+        "status":   "ok" if all_ok else "degraded",
+        "ts":       datetime.utcnow().isoformat(),
+        "checks":   checks,
+        "scan_cycle": state.bot_stats.get("scan_cycle", 0),
+    }
 
 
 async def _fetch_all_prices() -> dict:
@@ -595,7 +643,151 @@ async def close_all_positions():
     return await state.trading_system.close_all_positions_from_dashboard()
 
 
-@app.get("/api/signals")
+@app.post("/api/positions/cancel-pending")
+async def cancel_pending_orders():
+    """Cancel ALL pending LIMIT entry orders in the bot's queue."""
+    if not state.trading_system:
+        return {"ok": False, "error": "Bot not running"}
+    ts = state.trading_system
+    cancelled = []
+    errors = []
+    executor = getattr(ts, "_bybit_exec", None) if getattr(ts, "exchange", "") == "bybit" \
+        else getattr(ts, "_binance_exec", None)
+    for sym, pending in list(ts._pending_entry_orders.items()):
+        try:
+            if executor:
+                await executor.cancel_order(sym, pending.order_id)
+            del ts._pending_entry_orders[sym]
+            if hasattr(ts, "_risk"):
+                ts._risk.release_margin(
+                    pending.risk_params.position_size_usdt / max(pending.risk_params.leverage, 1)
+                )
+            cancelled.append(sym)
+        except Exception as exc:
+            errors.append(f"{sym}: {exc}")
+    logger.info("cancel_pending_orders: cancelled={} errors={}", cancelled, errors)
+    return {"ok": True, "cancelled": cancelled, "errors": errors}
+
+
+@app.post("/api/positions/emergency-kill")
+async def emergency_kill():
+    """
+    Atomic emergency stop:
+    1. Pause the bot (no new trades)
+    2. Cancel all pending LIMIT entry orders
+    3. Force-close all open positions at market price
+    """
+    if not state.trading_system:
+        return {"ok": False, "error": "Bot not running"}
+    ts = state.trading_system
+
+    # Step 1: Pause
+    ts._bot_paused = True
+    await broadcast("bot_state", {"paused": True})
+
+    # Step 2: Cancel pending LIMIT orders
+    cancel_result = await cancel_pending_orders()
+
+    # Step 3: Close all open positions
+    close_result = await ts.close_all_positions_from_dashboard()
+
+    logger.warning("EMERGENCY KILL executed — bot paused, pending cancelled, positions closed")
+    try:
+        if hasattr(ts, "_alerts"):
+            await ts._alerts.send_text(
+                "🔴 <b>EMERGENCY KILL triggered</b>\n"
+                "Bot paused • Pending orders cancelled • All positions force-closed"
+            )
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "paused": True,
+        "cancel_result": cancel_result,
+        "close_result": close_result,
+    }
+
+
+@app.get("/api/system-health")
+async def system_health():
+    """Return detailed system health for the dashboard System Health panel."""
+    import aiohttp as _aiohttp
+    import time as _time
+
+    ts = getattr(state, "trading_system", None)
+    result = {
+        "ts": datetime.utcnow().isoformat(),
+        "uptime_seconds": round(_time.time() - state.bot_stats["started_at"], 0)
+            if state.bot_stats.get("started_at") else 0,
+    }
+
+    # Redis
+    try:
+        redis = getattr(ts, "_redis", None) if ts else None
+        if redis:
+            await redis.ping()
+            result["redis"] = {"status": "ok", "message": "Connected"}
+        else:
+            result["redis"] = {"status": "warn", "message": "Unavailable (meta won't persist)"}
+    except Exception as exc:
+        result["redis"] = {"status": "error", "message": str(exc)}
+
+    # PostgreSQL
+    try:
+        if state.portfolio_manager and hasattr(state.portfolio_manager, "_db"):
+            async with state.portfolio_manager._db.connect() as conn:
+                await conn.execute("SELECT 1")
+            result["db"] = {"status": "ok", "message": "Connected"}
+        else:
+            result["db"] = {"status": "warn", "message": "Not initialised"}
+    except Exception as exc:
+        result["db"] = {"status": "error", "message": str(exc)[:200]}
+
+    # Binance
+    try:
+        base = (
+            "https://testnet.binancefuture.com"
+            if getattr(settings, "binance_testnet", False)
+            else "https://fapi.binance.com"
+        )
+        t0 = _time.monotonic()
+        async with _aiohttp.ClientSession() as sess:
+            async with sess.get(f"{base}/fapi/v1/ping", timeout=_aiohttp.ClientTimeout(total=5)) as r:
+                ms = round((_time.monotonic() - t0) * 1000)
+                if r.status == 200:
+                    result["binance"] = {"status": "ok", "message": f"Reachable ({ms}ms)",
+                                         "testnet": settings.binance_testnet}
+                else:
+                    result["binance"] = {"status": "warn", "message": f"HTTP {r.status}",
+                                         "testnet": settings.binance_testnet}
+    except Exception as exc:
+        result["binance"] = {"status": "error", "message": str(exc)[:200],
+                             "testnet": settings.binance_testnet}
+
+    # Bybit
+    try:
+        base_bb = (
+            "https://api-testnet.bybit.com"
+            if getattr(settings, "bybit_testnet", False)
+            else "https://api.bybit.com"
+        )
+        t0 = _time.monotonic()
+        async with _aiohttp.ClientSession() as sess:
+            async with sess.get(f"{base_bb}/v5/market/time", timeout=_aiohttp.ClientTimeout(total=5)) as r:
+                ms = round((_time.monotonic() - t0) * 1000)
+                data_bb = await r.json()
+                ok_bb = data_bb.get("retCode", -1) == 0
+                result["bybit"] = {
+                    "status": "ok" if ok_bb else "warn",
+                    "message": f"Reachable ({ms}ms)" if ok_bb else f"retCode={data_bb.get('retCode')}",
+                    "testnet": settings.bybit_testnet,
+                }
+    except Exception as exc:
+        result["bybit"] = {"status": "error", "message": str(exc)[:200],
+                           "testnet": settings.bybit_testnet}
+
+    return result
 async def get_signals():
     return {"signals": state.recent_signals[-100:]}
 
@@ -1280,7 +1472,156 @@ async def save_ai_config(request: Request):
     }
 
 
-async def _realtime_loop() -> None:
+# ---------------------------------------------------------------------------
+# Exchange API Key Config endpoints
+# ---------------------------------------------------------------------------
+
+def _mask_key(key: str) -> str:
+    if not key:
+        return ""
+    return key[:4] + "…" + key[-4:] if len(key) > 8 else "****"
+
+
+@app.get("/api/exchange-config")
+async def get_exchange_config():
+    """Return current exchange key settings (keys masked for security)."""
+    _s = settings
+    return {
+        "binance_key_set":     bool(getattr(_s, "binance_api_key", "")),
+        "binance_key_preview": _mask_key(getattr(_s, "binance_api_key", "")),
+        "binance_testnet":     getattr(_s, "binance_testnet", False),
+        "bybit_key_set":       bool(getattr(_s, "bybit_api_key", "")),
+        "bybit_key_preview":   _mask_key(getattr(_s, "bybit_api_key", "")),
+        "bybit_testnet":       getattr(_s, "bybit_testnet", False),
+        "active_exchange":     getattr(_s, "exchange", "binance"),
+    }
+
+
+@app.post("/api/exchange-config/test")
+async def test_exchange_config(request: Request):
+    """
+    Test exchange API key connectivity.
+    Payload: { exchange: "binance"|"bybit", api_key: "...", api_secret: "...", testnet: bool }
+    """
+    import aiohttp as _aiohttp
+    import hashlib, hmac as _hmac, time as _t
+    payload    = await request.json()
+    exchange   = payload.get("exchange", "binance").lower()
+    api_key    = payload.get("api_key", "").strip()
+    api_secret = payload.get("api_secret", "").strip()
+    testnet    = bool(payload.get("testnet", False))
+
+    if not api_key or not api_secret:
+        return {"success": False, "message": "API key and secret are required"}
+
+    try:
+        if exchange == "binance":
+            base = "https://testnet.binancefuture.com" if testnet else "https://fapi.binance.com"
+            params = {"timestamp": str(int(_t.time() * 1000)), "recvWindow": "5000"}
+            qs = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
+            sig = _hmac.new(api_secret.encode(), qs.encode(), hashlib.sha256).hexdigest()
+            url = f"{base}/fapi/v2/balance?{qs}&signature={sig}"
+            async with _aiohttp.ClientSession() as sess:
+                async with sess.get(url, headers={"X-MBX-APIKEY": api_key},
+                                    timeout=_aiohttp.ClientTimeout(total=8)) as r:
+                    data = await r.json()
+                    if r.status == 200 and isinstance(data, list):
+                        usdt = next((float(a["availableBalance"]) for a in data if a.get("asset") == "USDT"), 0.0)
+                        mode = "TESTNET" if testnet else "LIVE"
+                        return {"success": True,
+                                "message": f"Binance {mode} — USDT balance: {usdt:.2f}"}
+                    msg = data.get("msg", "Unknown error") if isinstance(data, dict) else str(data)
+                    return {"success": False, "message": f"Binance error: {msg}"}
+        elif exchange == "bybit":
+            base = "https://api-testnet.bybit.com" if testnet else "https://api.bybit.com"
+            ts = str(int(_t.time() * 1000))
+            params_str = "accountType=CONTRACT"
+            sign_str   = ts + api_key + "5000" + params_str
+            sig = _hmac.new(api_secret.encode(), sign_str.encode(), hashlib.sha256).hexdigest()
+            headers = {
+                "X-BAPI-API-KEY": api_key, "X-BAPI-TIMESTAMP": ts,
+                "X-BAPI-SIGN": sig, "X-BAPI-RECV-WINDOW": "5000",
+            }
+            async with _aiohttp.ClientSession() as sess:
+                async with sess.get(f"{base}/v5/account/wallet-balance?{params_str}",
+                                    headers=headers,
+                                    timeout=_aiohttp.ClientTimeout(total=8)) as r:
+                    data = await r.json()
+                    if data.get("retCode") == 0:
+                        coins = data.get("result", {}).get("list", [{}])[0].get("coin", [])
+                        usdt = next((float(c["availableToWithdraw"]) for c in coins if c.get("coin") == "USDT"), 0.0)
+                        mode = "TESTNET" if testnet else "LIVE"
+                        return {"success": True,
+                                "message": f"Bybit {mode} — USDT available: {usdt:.2f}"}
+                    return {"success": False, "message": data.get("retMsg", "Bybit API error")}
+        return {"success": False, "message": f"Unknown exchange: {exchange}"}
+    except asyncio.TimeoutError:
+        return {"success": False, "message": "Connection timed out"}
+    except Exception as exc:
+        return {"success": False, "message": str(exc)}
+
+
+@app.post("/api/exchange-config/save")
+async def save_exchange_config(request: Request):
+    """
+    Save exchange API keys + testnet flags to .env (no restart required for flags, restart required for keys).
+    Payload: { exchange: "binance"|"bybit", api_key: str, api_secret: str, testnet: bool }
+    """
+    import re
+    payload    = await request.json()
+    exchange   = payload.get("exchange", "binance").lower()
+    api_key    = payload.get("api_key", "").strip()
+    api_secret = payload.get("api_secret", "").strip()
+    testnet    = bool(payload.get("testnet", False))
+
+    if exchange not in ("binance", "bybit"):
+        return {"success": False, "message": f"Unknown exchange: {exchange}"}
+
+    env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
+    lines: list[str] = []
+    if os.path.exists(env_path):
+        with open(env_path, "r", encoding="utf-8") as fh:
+            lines = fh.readlines()
+
+    def _set(lines, key, value):
+        pat = re.compile(rf"^\s*{re.escape(key)}\s*=", re.IGNORECASE)
+        replaced = False
+        result = []
+        for ln in lines:
+            if pat.match(ln):
+                result.append(f"{key}={value}\n")
+                replaced = True
+            else:
+                result.append(ln)
+        if not replaced:
+            result.append(f"{key}={value}\n")
+        return result
+
+    prefix = exchange.upper()
+    if api_key and "…" not in api_key and len(api_key) > 8:
+        lines = _set(lines, f"{prefix}_API_KEY", api_key)
+    if api_secret and "…" not in api_secret and len(api_secret) > 8:
+        lines = _set(lines, f"{prefix}_API_SECRET", api_secret)
+    lines = _set(lines, f"{prefix}_TESTNET", str(testnet).lower())
+
+    try:
+        with open(env_path, "w", encoding="utf-8") as fh:
+            fh.writelines(lines)
+    except Exception as exc:
+        return {"success": False, "message": f"Failed to write .env: {exc}"}
+
+    # Apply testnet flag at runtime (no restart needed for flags)
+    testnet_attr = f"{exchange}_testnet"
+    try:
+        setattr(settings, testnet_attr, testnet)
+    except Exception:
+        pass
+
+    return {
+        "success": True,
+        "message": f"{exchange.capitalize()} config saved — API keys require restart to take effect",
+        "restart_required": bool(api_key or api_secret),
+    }
     """Push metrics + enriched positions + tickers to all connected WS clients every 5 seconds."""
     import time as _time
     while True:

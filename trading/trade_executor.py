@@ -248,6 +248,22 @@ class BinanceExecutor:
             logger.error("Binance API key validation FAILED: {}", exc)
         return False
 
+    # ── Margin mode ───────────────────────────────────────────────────────────
+    async def set_margin_mode(self, symbol: str, mode: str = "ISOLATED") -> None:
+        """
+        Set margin type for symbol before opening a position.
+        mode = ISOLATED | CROSSED.  Code -4046 = 'No need to change margin type' → OK.
+        """
+        try:
+            await self._post("/fapi/v1/marginType", {
+                "symbol":     symbol,
+                "marginType": mode,
+            })
+        except Exception as exc:
+            # -4046: already in the requested mode — safe to ignore
+            if "-4046" not in str(exc) and "No need to change" not in str(exc):
+                logger.warning("set_margin_mode {}/{}: {}", symbol, mode, exc)
+
     # ── Set leverage ──────────────────────────────────────────────────────────
     async def set_leverage(self, symbol: str, leverage: int) -> None:
         await self._post("/fapi/v1/leverage", {
@@ -312,12 +328,15 @@ class BinanceExecutor:
             return result
 
         try:
+            # Enforce isolated margin before setting leverage or opening position
+            await self.set_margin_mode(params.symbol, "ISOLATED")
             await self.set_leverage(params.symbol, params.leverage)
 
             order = await self.place_market_order(
                 params.symbol, side, params.quantity
             )
             result["order_id"]    = order.get("orderId")
+            result["fill_price"]  = float(order.get("avgPrice") or params.entry_price)
             result["entry_order"] = order
 
             sl_order = await self.place_stop_loss(
@@ -452,6 +471,8 @@ class BybitExecutor:
         self._secret = settings.bybit_api_secret
         self._base   = self.BASE_TEST if settings.bybit_testnet else self.BASE
         self._session: Optional[aiohttp.ClientSession] = None
+        # symbol → {step_size, tick_size, min_qty, min_notional, qty_dec, price_dec}
+        self._symbol_filters: Dict[str, dict] = {}
 
     async def start(self) -> None:
         self._session = aiohttp.ClientSession(
@@ -543,6 +564,82 @@ class BybitExecutor:
             logger.error("Bybit API key validation FAILED: {}", exc)
         return False
 
+    # ── Exchange filters ───────────────────────────────────────────────────────
+    async def load_exchange_filters(self) -> None:
+        """
+        Fetch LOT_SIZE / PRICE_FILTER / MIN_NOTIONAL for all USDT linear symbols.
+        Must be called once after start() before placing any orders.
+        """
+        try:
+            data = await self._get("/v5/market/instruments-info",
+                                   {"category": "linear", "limit": "1000"})
+            loaded = 0
+            for item in data.get("result", {}).get("list", []):
+                if item.get("settleCoin") != "USDT":
+                    continue
+                symbol    = item["symbol"]
+                lot_size  = item.get("lotSizeFilter", {})
+                price_flt = item.get("priceFilter", {})
+
+                step     = float(lot_size.get("qtyStep", "0.001"))
+                tick     = float(price_flt.get("tickSize", "0.00001"))
+                min_qty  = float(lot_size.get("minOrderQty", "0.001"))
+                min_val  = float(lot_size.get("minOrderAmt", "5"))   # minOrderAmt = min notional
+
+                self._symbol_filters[symbol] = {
+                    "step_size":    step,
+                    "tick_size":    tick,
+                    "min_qty":      min_qty,
+                    "min_notional": min_val,
+                    "qty_dec":      _decimals(step),
+                    "price_dec":    _decimals(tick),
+                }
+                loaded += 1
+            logger.info("Bybit: loaded exchange filters for {} symbols", loaded)
+        except Exception as exc:
+            logger.error("Bybit load_exchange_filters failed: {} — using fallback precision", exc)
+
+    def _round_qty(self, symbol: str, quantity: float) -> float:
+        """Floor quantity to the symbol's lotSizeFilter qtyStep."""
+        f = self._symbol_filters.get(symbol)
+        if not f:
+            return round(quantity, 3)
+        qty = _floor_to_step(quantity, f["step_size"])
+        return round(qty, f["qty_dec"])
+
+    def _round_price(self, symbol: str, price: float) -> float:
+        """Round price to the symbol's PRICE_FILTER tickSize."""
+        f = self._symbol_filters.get(symbol)
+        if not f:
+            return round(price, 6)
+        return _round_to_tick(price, f["tick_size"])
+
+    def validate_min_notional(self, symbol: str, notional: float) -> bool:
+        f = self._symbol_filters.get(symbol)
+        if not f:
+            return True
+        ok = notional >= f["min_notional"]
+        if not ok:
+            logger.warning(
+                "{} notional {:.2f} USDT < Bybit minimum {:.2f} USDT — order would be rejected",
+                symbol, notional, f["min_notional"],
+            )
+        return ok
+
+    # ── Margin mode ───────────────────────────────────────────────────────────
+    async def set_margin_mode(self, symbol: str, mode: str = "ISOLATED_MARGIN") -> None:
+        """
+        Set trade mode for symbol: ISOLATED_MARGIN | REGULAR_MARGIN (cross).
+        retCode 110026 = 'Position mode not modified' — treat as success.
+        """
+        resp = await self._post("/v5/account/set-margin-mode", {
+            "setMarginMode": mode,
+        })
+        code = resp.get("retCode", 0)
+        if code not in (0, 3400045):
+            logger.warning("Bybit set_margin_mode {}/{}: retCode={} msg={}",
+                           symbol, mode, code, resp.get("retMsg"))
+
     # ── Set leverage ───────────────────────────────────────────────────────────
     async def set_leverage(self, symbol: str, leverage: int) -> None:
         """
@@ -564,18 +661,29 @@ class BybitExecutor:
         side   = "Buy" if params.direction == "LONG" else "Sell"
         result = {"exchange": "bybit", "symbol": params.symbol}
 
+        # Guard: check minimum notional
+        if not self.validate_min_notional(params.symbol, params.position_size_usdt):
+            result["status"] = "error"
+            result["error"]  = f"notional {params.position_size_usdt:.2f} < min_notional"
+            return result
+
         try:
-            # Set leverage explicitly before placing the order
+            # Enforce isolated margin, then set leverage
+            await self.set_margin_mode(params.symbol, "ISOLATED_MARGIN")
             await self.set_leverage(params.symbol, params.leverage)
+
+            qty   = self._round_qty(params.symbol, params.quantity)
+            sl    = self._round_price(params.symbol, params.stop_loss)
+            tp    = self._round_price(params.symbol, params.take_profit)
 
             body = {
                 "category":    "linear",
                 "symbol":      params.symbol,
                 "side":        side,
                 "orderType":   "Market",
-                "qty":         str(params.quantity),
-                "stopLoss":    str(params.stop_loss),
-                "takeProfit":  str(params.take_profit),
+                "qty":         str(qty),
+                "stopLoss":    str(sl),
+                "takeProfit":  str(tp),
                 "slTriggerBy": "LastPrice",
                 "tpTriggerBy": "LastPrice",
                 "timeInForce": "GoodTillCancel",
@@ -587,8 +695,9 @@ class BybitExecutor:
                 logger.error("Bybit order rejected ({}): retCode={} msg={}",
                              params.symbol, resp.get("retCode"), resp.get("retMsg"))
             else:
-                result["order_id"] = resp.get("result", {}).get("orderId")
-                result["status"]   = "open"
+                result["order_id"]   = resp.get("result", {}).get("orderId")
+                result["fill_price"] = params.entry_price   # market — actual fill confirmed by WS
+                result["status"]     = "open"
                 logger.info("Bybit trade opened: {}", result)
         except Exception as exc:
             result["status"] = "error"

@@ -168,6 +168,7 @@ class TradingSystem:
     # ── Lifecycle ─────────────────────────────────────────────────────────
     async def start(self) -> None:
         self._running = True
+        state.bot_stats["started_at"] = time.time()   # used for uptime calculation in dashboard
         logger.info(
             "Starting Crypto AI Trading System | exchange={} dry_run={}",
             self.exchange, self.dry_run,
@@ -216,7 +217,9 @@ class TradingSystem:
                 # Continue anyway — bot can still run in dry-run style while user fixes keys
 
             # Load exchange symbol filters (LOT_SIZE, PRICE_FILTER, MIN_NOTIONAL)
-            if self.exchange != "bybit":
+            if self.exchange == "bybit":
+                await self._bybit_exec.load_exchange_filters()
+            else:
                 await self._binance_exec.load_exchange_filters()
 
         # Restore position meta from Redis after a crash/restart
@@ -726,12 +729,21 @@ class TradingSystem:
                     self._risk.daily_trades_remaining,
                     settings.scan_interval_seconds,
                 )
+                # Update dashboard bot status panel
+                state.bot_stats["scan_cycle"]        = state.bot_stats.get("scan_cycle", 0) + 1
+                state.bot_stats["watchlist_count"]   = len(self._watchlist)
+                state.bot_stats["daily_trades_today"] = self._risk._daily_trades
+                state.bot_stats["last_scan_ts"]      = now
                 await asyncio.sleep(settings.scan_interval_seconds)
 
             except asyncio.CancelledError:
                 break
             except Exception as exc:
                 logger.error("Scan loop error: {}", exc)
+                try:
+                    await self._alerts.send_critical_error("Scan loop crashed", str(exc))
+                except Exception:
+                    pass
                 await asyncio.sleep(10)
 
     # ── Trade execution ────────────────────────────────────────────────────
@@ -741,6 +753,13 @@ class TradingSystem:
         research_id: Optional[int] = None,
         research_score: float = 0.0,
     ) -> None:
+        # Per-symbol duplicate guard — never open two concurrent positions on the same coin
+        if signal.symbol in self._position_meta or signal.symbol in self._pending_entry_orders:
+            logger.debug(
+                "Skip {}: already has an open/pending position", signal.symbol
+            )
+            return
+
         # Check open trade + daily limits
         await self._sync_open_trades()
         if not self._risk.can_open_trade():
@@ -946,10 +965,12 @@ class TradingSystem:
                 result = await self._binance_exec.execute_trade(risk_params)
 
             if result.get("status") == "open":
+                # Use actual fill price from exchange if available (Binance avgPrice)
+                actual_entry = float(result.get("fill_price") or risk_params.entry_price)
                 trade_id = await self._portfolio.open_position({
                     "symbol":           risk_params.symbol,
                     "direction":        risk_params.direction,
-                    "entry_price":      risk_params.entry_price,
+                    "entry_price":      actual_entry,
                     "stop_loss":        risk_params.stop_loss,
                     "take_profit":      risk_params.take_profit,
                     "quantity":         risk_params.quantity,
@@ -960,9 +981,13 @@ class TradingSystem:
                     "signal_score":     signal.score,
                     "strategy_name":    strategy_name,
                 })
+                if actual_entry != risk_params.entry_price:
+                    slippage_pct = abs(actual_entry - risk_params.entry_price) / risk_params.entry_price * 100
+                    logger.info("{} slippage: signal={:.6f} fill={:.6f} ({:.3f}%)",
+                                risk_params.symbol, risk_params.entry_price, actual_entry, slippage_pct)
                 if trade_id:
                     meta = self._make_position_meta(
-                        risk_params.entry_price,
+                        actual_entry,
                         sl_order_id=result.get("sl_order_id"),
                         tp_order_id=result.get("tp_order_id"),
                     )
@@ -1255,17 +1280,23 @@ class TradingSystem:
                                     filled = live_price >= pending.limit_price
                             else:
                                 filled = False
+                            partial_qty = 0.0
                         elif self.exchange == "bybit":
                             status_data = await executor.get_order_status(
                                 symbol, pending.order_id
                             )
                             order_info = status_data.get("result", {}).get("list", [{}])[0]
-                            filled = order_info.get("orderStatus", "") == "Filled"
+                            order_status = order_info.get("orderStatus", "")
+                            filled = order_status == "Filled"
+                            # Track partial fill qty so timeout handler can accept it
+                            partial_qty = float(order_info.get("cumExecQty", 0)) if order_status == "PartiallyFilled" else 0.0
                         else:
                             status_data = await executor.get_order_status(
                                 symbol, int(pending.order_id)
                             )
-                            filled = status_data.get("status", "") == "FILLED"
+                            order_status = status_data.get("status", "")
+                            filled = order_status == "FILLED"
+                            partial_qty = float(status_data.get("executedQty", 0)) if order_status == "PARTIALLY_FILLED" else 0.0
                     except Exception as exc:
                         logger.debug("Limit order status error {}: {}", symbol, exc)
                         continue
@@ -1356,12 +1387,72 @@ class TradingSystem:
                             "⏱ LIMIT order timed out ({:.0f}s): {} — cancelling",
                             elapsed, symbol,
                         )
+                        # Cancel remainder (even if partially filled — cancels unfilled portion)
                         try:
                             await executor.cancel_order(symbol, pending.order_id)
                         except Exception as exc:
                             logger.debug("Cancel timed-out order {}: {}", symbol, exc)
 
                         del self._pending_entry_orders[symbol]
+
+                        # ── Accept partial fill to avoid orphaned exchange position ──
+                        # If some qty was already filled before the timeout, place SL/TP
+                        # for that partial qty and record in DB. This prevents an unmanaged
+                        # position from bleeding on the exchange with no stop-loss.
+                        if partial_qty > 0 and not self.dry_run:
+                            logger.warning(
+                                "⚠️ {} LIMIT partial fill {:.4f} at timeout — accepting partial, placing SL/TP",
+                                symbol, partial_qty,
+                            )
+                            rp = pending.risk_params
+                            try:
+                                if self.exchange == "bybit":
+                                    await executor.set_position_tp_sl(
+                                        symbol, rp.stop_loss, rp.take_profit
+                                    )
+                                else:
+                                    side = "BUY" if rp.direction == "LONG" else "SELL"
+                                    sl_r = await executor.place_stop_loss(symbol, side, partial_qty, rp.stop_loss)
+                                    tp_r = await executor.place_take_profit(symbol, side, partial_qty, rp.take_profit)
+                                    sl_oid = sl_r.get("orderId")
+                                    tp_oid = tp_r.get("orderId")
+                            except Exception as exc:
+                                logger.error("Partial fill SL/TP placement {}: {}", symbol, exc)
+                                sl_oid = tp_oid = None
+                            # Record partial position in DB
+                            partial_notional = partial_qty * rp.entry_price
+                            partial_trade_id = await self._portfolio.open_position({
+                                "symbol":             symbol,
+                                "direction":          rp.direction,
+                                "entry_price":        rp.entry_price,
+                                "stop_loss":          rp.stop_loss,
+                                "take_profit":        rp.take_profit,
+                                "quantity":           partial_qty,
+                                "leverage":           rp.leverage,
+                                "position_size_usdt": partial_notional,
+                                "exchange":           self.exchange,
+                                "order_id":           pending.order_id,
+                                "signal_score":       pending.signal.score,
+                                "strategy_name":      pending.strategy_name,
+                            })
+                            if partial_trade_id:
+                                meta = self._make_position_meta(
+                                    rp.entry_price,
+                                    sl_order_id=sl_oid if self.exchange != "bybit" else None,
+                                    tp_order_id=tp_oid if self.exchange != "bybit" else None,
+                                )
+                                meta["strategy_name"] = pending.strategy_name
+                                meta["margin_used"] = partial_notional / max(rp.leverage, 1)
+                                self._position_meta[symbol] = meta
+                                await self._persist_meta(symbol, meta)
+                            self._risk.release_margin(
+                                (rp.position_size_usdt - partial_notional) / max(rp.leverage, 1)
+                            )
+                            await self._alerts.send_text(
+                                f"⚠️ *{symbol}* limit order partially filled\n"
+                                f"Filled {partial_qty:.4f} of {rp.quantity:.4f} — SL/TP placed"
+                            )
+                            continue
 
                         if pending.retry_count < settings.limit_order_max_retries:
                             await self._retry_limit_entry(pending)
