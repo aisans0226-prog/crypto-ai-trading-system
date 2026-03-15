@@ -359,17 +359,27 @@ class SelfLearningEngine:
             if not raw_X:
                 return
 
-            # Pad inhomogeneous feature vectors to the largest length (0.5 = neutral).
-            # Necessary when a feature-set expansion means old DB samples have fewer
-            # features than the current code generates.
+            # When a feature-set expansion happens, old DB samples have a different
+            # vector length than the current code generates.  Training on a mix of
+            # sizes produces unusable models (shape mismatch at inference time).
+            # Fix: filter to only the group with the LARGEST feature count
+            # (= the most-recently-saved format).  If that group has < 30 samples
+            # we bail out and wait for more current-format trades to accumulate.
             target_len = max(len(x) for x in raw_X)
-            X_list = []
-            for xi in raw_X:
-                if len(xi) < target_len:
-                    xi = np.pad(xi, (0, target_len - len(xi)), constant_values=0.5)
-                X_list.append(xi)
+            X_list, y_list = [], []
+            for xi, yi in zip(raw_X, raw_y):
+                if len(xi) == target_len:
+                    X_list.append(xi)
+                    y_list.append(yi)
+            if len(X_list) < 30:
+                logger.info(
+                    "Retrain skipped — only {} samples match current feature count ({})."
+                    " Waiting for more current-format trades.",
+                    len(X_list), target_len,
+                )
+                return
             X = np.array(X_list, dtype=np.float32)
-            y = np.array(raw_y)
+            y = np.array(y_list)
             if len(X) > 5000:
                 X, y = X[-5000:], y[-5000:]
 

@@ -213,7 +213,7 @@ class XGBoostPredictor:
                 ctx_size = expected_n - base_n
                 if ctx_size not in (6, 8):
                     # Old model trained on a different base feature set — skip safely
-                    logger.warning(
+                    logger.debug(
                         "XGB feature mismatch: model expects {} features, "
                         "got base={} ctx_size={} (not 6 or 8). "
                         "Returning 0.5 until retrained with new features.",
@@ -326,7 +326,7 @@ class LGBMPredictor:
             if expected_n > base_n:
                 ctx_size = expected_n - base_n
                 if ctx_size not in (6, 8):
-                    logger.warning("LGB feature mismatch (ctx_size={}), returning 0.5", ctx_size)
+                    logger.debug("LGB feature mismatch (ctx_size={}), returning 0.5", ctx_size)
                     return 0.5
                 ctx = context or {}
                 from ml_models.self_learning import _STRATEGY_IDS, _NUM_STRATEGIES
