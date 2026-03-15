@@ -84,10 +84,15 @@ class ResearchEngine:
         tf_list = [tf for tf, _ in self._TIMEFRAMES]
         tf_weights = {tf: w for tf, w in self._TIMEFRAMES}
 
-        df_results = await asyncio.gather(
-            *[self._data.get_klines_binance(symbol, tf, 200) for tf in tf_list],
-            return_exceptions=True,
-        )
+        # Also fetch BTC 4h for trend filter (skip if symbol IS BTC)
+        fetch_btc = symbol != "BTCUSDT"
+        fetch_tasks = [self._data.get_klines_binance(symbol, tf, 200) for tf in tf_list]
+        if fetch_btc:
+            fetch_tasks.append(self._data.get_klines_binance("BTCUSDT", "4h", 60))
+
+        all_results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+        df_results = all_results[:len(tf_list)]
+        btc_df_4h = all_results[len(tf_list)] if fetch_btc else None
 
         for tf, df_or_exc in zip(tf_list, df_results):
             weight = tf_weights[tf]
@@ -195,6 +200,42 @@ class ResearchEngine:
             score = max(0.0, min(10.0, score + bonus))
             tag = f"hist_wr_{stats['win_rate']:.0f}pct"
             (reasons if bonus >= 0 else failed).append(tag)
+
+        # ── BTC 4h trend filter — block LONG in bear market (LONG WR 38% vs SHORT 51%) ──
+        if direction == "LONG" and btc_df_4h is not None and not isinstance(btc_df_4h, Exception):
+            try:
+                btc_close = btc_df_4h["close"].astype(float)
+                btc_ema20 = float(btc_close.ewm(span=20).mean().iloc[-1])
+                btc_ema50 = float(btc_close.ewm(span=50).mean().iloc[-1])
+                if btc_ema20 < btc_ema50:
+                    score = max(0.0, score - 2.5)
+                    failed.append(f"btc_4h_bearish_ema20={btc_ema20:.0f}<ema50={btc_ema50:.0f}")
+                    logger.debug(
+                        "{} LONG -2.5 penalty: BTC 4h bearish (EMA20={:.0f} < EMA50={:.0f})",
+                        symbol, btc_ema20, btc_ema50,
+                    )
+            except Exception as _btc_err:
+                logger.debug("BTC trend filter error: {}", _btc_err)
+
+        # ── Score 9+ LONG exhaustion gate — high score = pump already done (WR 8.3%) ──
+        if initial_score >= 9 and direction == "LONG":
+            try:
+                df_15m = df_results[0]  # 15m is index 0 in _TIMEFRAMES
+                if not isinstance(df_15m, Exception) and df_15m is not None:
+                    rsi_15m = float(
+                        ta.momentum.RSIIndicator(
+                            close=df_15m["close"].astype(float), window=14
+                        ).rsi().iloc[-1]
+                    )
+                    if rsi_15m > 60:
+                        score = max(0.0, score - 2.5)
+                        failed.append(f"exhaustion_long_score{initial_score}_rsi15m={rsi_15m:.0f}")
+                        logger.debug(
+                            "{} score={} LONG RSI15m={:.0f}>60 exhaustion penalty -2.5",
+                            symbol, initial_score, rsi_15m,
+                        )
+            except Exception as _rsi_err:
+                logger.debug("Score9+ LONG RSI gate error: {}", _rsi_err)
 
         passed = (
             score >= settings.effective_research_min_score

@@ -379,7 +379,7 @@ class TradingSystem:
         pos_data = positions[symbol]
 
         # Try WS ticker first, then klines cache, then REST fallback
-        current_price = float(self._cache.tickers.get(symbol, {}).get("c", 0))
+        current_price = float(self._cache.tickers.get(symbol, {}).get("price", 0))
         if current_price <= 0:
             df = self._klines_cache.get(symbol)
             if df is not None and len(df) > 0:
@@ -847,30 +847,9 @@ class TradingSystem:
             logger.debug("Strategy eval error {}: {}", signal.symbol, exc)
 
         if not setup:
-            # Fallback: percentage-based SL/TP when no strategy matches direction
-            price = signal.price
-            if not price or price <= 0:
-                logger.debug("{} — no strategy and no valid price, skip", signal.symbol)
-                return
-            sl_pct = min(1.5, settings.max_stop_loss_pct * 0.6)
-            tp_pct = sl_pct * settings.min_risk_reward_ratio
-            if signal.direction == "LONG":
-                sl = round(price * (1 - sl_pct / 100), 8)
-                tp = round(price * (1 + tp_pct / 100), 8)
-            else:
-                sl = round(price * (1 + sl_pct / 100), 8)
-                tp = round(price * (1 - tp_pct / 100), 8)
-            setup = TradeSetup(
-                symbol=signal.symbol,
-                direction=signal.direction,
-                entry_price=price,
-                stop_loss=sl,
-                take_profit=tp,
-                leverage=settings.max_leverage,
-                risk_reward=settings.min_risk_reward_ratio,
-            )
-            strategy_name = "FALLBACK"
-            logger.info("{} — FALLBACK setup: {} sl={:.6f} tp={:.6f}", signal.symbol, signal.direction, sl, tp)
+            # No strategy matched — skip trade (FALLBACK had 36.1% WR, -$46.89, disabled)
+            logger.info("{} — no strategy matched {}, skip", signal.symbol, signal.direction)
+            return
 
         # Re-fetch available balance from exchange right before sizing.
         # Only refreshes the balance figure — does NOT reset _used_margin because
@@ -902,7 +881,7 @@ class TradingSystem:
         # since the signal was confirmed (prevents chasing after a big spike).
         if settings.entry_max_deviation_pct > 0:
             live_ticker = self._cache.tickers.get(risk_params.symbol, {})
-            live_price = float(live_ticker.get("c", 0))
+            live_price = float(live_ticker.get("price", 0))
             if live_price > 0:
                 deviation_pct = abs(live_price - risk_params.entry_price) / risk_params.entry_price * 100
                 if deviation_pct > settings.entry_max_deviation_pct:
@@ -923,7 +902,7 @@ class TradingSystem:
         #          within the timeout window, then executes the paper trade.
         if settings.entry_order_type == "LIMIT":
             live_ticker = self._cache.tickers.get(risk_params.symbol, {})
-            live_price = float(live_ticker.get("c", 0)) or risk_params.entry_price
+            live_price = float(live_ticker.get("price", 0)) or risk_params.entry_price
             offset = settings.limit_entry_offset_pct / 100
             if risk_params.direction == "LONG":
                 limit_price = round(live_price * (1 - offset), 8)
@@ -1256,7 +1235,7 @@ class TradingSystem:
                         else:
                             # Position still open — run smart exit checks
                             ticker = self._cache.tickers.get(symbol, {})
-                            current_price = float(ticker.get("c", 0))
+                            current_price = float(ticker.get("price", 0))
                             # Fallback to klines cache if WS ticker not yet available
                             if current_price <= 0:
                                 df = self._klines_cache.get(symbol)
@@ -1276,23 +1255,40 @@ class TradingSystem:
         portfolio_positions = await self._portfolio.get_open_positions()
         for symbol, pos_data in list(portfolio_positions.items()):
             try:
+                # Bug fix: WS cache stores price under "price" key, not "c"
                 ticker = self._cache.tickers.get(symbol, {})
-                current_price = float(ticker.get("c", 0))
+                current_price = float(ticker.get("price", 0))
+
+                # Candle extremes for accurate TP/SL detection (catch wicks within candle)
+                candle_high = current_price
+                candle_low = current_price
 
                 # WS ticker cache miss — fall back to klines last close, then REST
                 if current_price <= 0:
                     df = self._klines_cache.get(symbol)
                     if df is not None and len(df) > 0:
                         current_price = float(df["close"].iloc[-1])
+                        candle_high = float(df["high"].iloc[-1])
+                        candle_low  = float(df["low"].iloc[-1])
                 if current_price <= 0:
                     try:
                         kl = await self._data_engine.get_klines_binance(symbol, "1m", 2)
                         current_price = float(kl["close"].iloc[-1])
+                        candle_high = float(kl["high"].iloc[-1])
+                        candle_low  = float(kl["low"].iloc[-1])
                         self._klines_cache[symbol] = kl   # prime cache for next cycle
                     except Exception:
                         pass
                 if current_price <= 0:
                     continue
+
+                # Also check klines cache high/low even when WS ticker is available,
+                # to detect TP/SL touches that occurred within the last closed candle
+                if candle_high == current_price or candle_low == current_price:
+                    df = self._klines_cache.get(symbol)
+                    if df is not None and len(df) > 0:
+                        candle_high = max(current_price, float(df["high"].iloc[-1]))
+                        candle_low  = min(current_price, float(df["low"].iloc[-1]))
 
                 direction = pos_data.get("direction", "LONG")
                 entry = float(pos_data.get("entry_price", 0))
@@ -1300,16 +1296,17 @@ class TradingSystem:
                 tp = float(pos_data.get("take_profit", 0))
                 qty = float(pos_data.get("quantity", 0))
 
+                # Use candle extremes: low for LONG SL / SHORT TP, high for LONG TP / SHORT SL
                 hit_price = None
                 if direction == "LONG":
-                    if current_price <= sl:
+                    if sl > 0 and candle_low <= sl:
                         hit_price = sl
-                    elif current_price >= tp:
+                    elif tp > 0 and candle_high >= tp:
                         hit_price = tp
                 else:
-                    if current_price >= sl:
+                    if sl > 0 and candle_high >= sl:
                         hit_price = sl
-                    elif current_price <= tp:
+                    elif tp > 0 and candle_low <= tp:
                         hit_price = tp
 
                 if hit_price:
@@ -1356,7 +1353,7 @@ class TradingSystem:
                         if self.dry_run:
                             # Simulate fill: check if live price has reached limit_price
                             live_ticker = self._cache.tickers.get(symbol, {})
-                            live_price = float(live_ticker.get("c", 0))
+                            live_price = float(live_ticker.get("price", 0))
                             if live_price > 0 and pending.limit_price > 0:
                                 if pending.risk_params.direction == "LONG":
                                     filled = live_price <= pending.limit_price
@@ -1578,7 +1575,7 @@ class TradingSystem:
             return
 
         live_ticker = self._cache.tickers.get(pending.symbol, {})
-        live_price = float(live_ticker.get("c", 0))
+        live_price = float(live_ticker.get("price", 0))
         if live_price <= 0:
             logger.debug("Limit retry skipped — no live price for {}", pending.symbol)
             return
