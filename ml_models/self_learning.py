@@ -355,8 +355,21 @@ class SelfLearningEngine:
         Both tree models log their validation AUC after training.
         """
         try:
-            X = np.array(self._samples_X)
-            y = np.array(self._samples_y)
+            raw_X, raw_y = self._samples_X, self._samples_y
+            if not raw_X:
+                return
+
+            # Pad inhomogeneous feature vectors to the largest length (0.5 = neutral).
+            # Necessary when a feature-set expansion means old DB samples have fewer
+            # features than the current code generates.
+            target_len = max(len(x) for x in raw_X)
+            X_list = []
+            for xi in raw_X:
+                if len(xi) < target_len:
+                    xi = np.pad(xi, (0, target_len - len(xi)), constant_values=0.5)
+                X_list.append(xi)
+            X = np.array(X_list, dtype=np.float32)
+            y = np.array(raw_y)
             if len(X) > 5000:
                 X, y = X[-5000:], y[-5000:]
 
