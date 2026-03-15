@@ -1979,7 +1979,9 @@ async function lLn(){
   var el=document.getElementById('lnst');
   if(el){
     var lr=st.last_retrain_ts?new Date(st.last_retrain_ts).toLocaleString():'Never';
-    var needRow=st.model_trained?'':'<tr><td class="neu">Samples for first train</td><td class="neu">'+(st.samples_needed_for_first||30)+' more needed</td></tr>';
+    var needSamples=st.samples_needed_for_first!=null?st.samples_needed_for_first:Math.max(0,30-(st.total_samples||0));
+    var needText=needSamples>0?needSamples+' more needed':'<span class="pos">Ready — training pending</span>';
+    var needRow=st.model_trained?'':'<tr><td class="neu">Samples for first train</td><td>'+needText+'</td></tr>';
     el.innerHTML='<table class="tbl">'
       +'<tr><td class="neu">Total labeled</td><td><strong>'+(st.total_samples||0)+'</strong></td></tr>'
       +'<tr><td class="neu">Wins / Losses</td><td><span class="pos">'+(st.wins||0)+'</span> / <span class="neg">'+(st.losses||0)+'</span></td></tr>'
@@ -1996,9 +1998,18 @@ async function lLn(){
   }
 
   // Progress bar
-  var pct=(st.new_since_retrain||0)/(st.retrain_threshold||50)*100;
+  var pct,lblTxt;
+  if(!st.model_trained){
+    var firstThresh=30;
+    var tot=st.total_samples||0;
+    pct=Math.min(100,tot/firstThresh*100);
+    lblTxt=tot>=firstThresh?tot+' samples — threshold met, training pending':tot+' / '+firstThresh+' until first train';
+  }else{
+    pct=(st.new_since_retrain||0)/(st.retrain_threshold||50)*100;
+    lblTxt=(st.new_since_retrain||0)+' / '+(st.retrain_threshold||50)+' until next retrain';
+  }
   var bar=document.getElementById('rbar');if(bar)bar.style.width=pct+'%';
-  var lbl=document.getElementById('rlbl');if(lbl)lbl.textContent=(st.new_since_retrain||0)+' / '+(st.retrain_threshold||50)+' until next retrain';
+  var lbl=document.getElementById('rlbl');if(lbl)lbl.textContent=lblTxt;
 
   // ── Top learned coins (with inline bar) ────────────────────────────────
   var tce=document.getElementById('tclst');
