@@ -591,6 +591,11 @@ class TradingSystem:
                 # Track which symbols are currently qualifying (for watchlist expiry)
                 live_qualifying: set = set()
 
+                # Sync open-trade count from DB once per scan cycle so the
+                # pre-research capacity check at line ~708 uses the real count,
+                # not the stale in-memory value (which starts at 0 after restart).
+                await self._sync_open_trades()
+
                 for signal in signals:
                     # Pre-filter: skip only signals that can't reach threshold even with
                     # max ML (+3) + sentiment (+1) boost. This allows scanner scores of
@@ -2059,6 +2064,7 @@ async def run_all(args: argparse.Namespace) -> None:
         host=settings.dashboard_host,
         port=settings.dashboard_port,
         log_level="warning",
+        ws="websockets",   # explicit: silence "No supported WebSocket library" warning
     )
     server = uvicorn.Server(config)
 
