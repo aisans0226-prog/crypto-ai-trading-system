@@ -303,6 +303,16 @@ class RiskManager:
                 fee_ratio * 100, risk_usdt,
             )
 
+        # Hard-skip: fees eating too large a share of risk destroys EV regardless of R:R.
+        max_fee_ratio = settings.max_fee_ratio_pct / 100.0 if settings.max_fee_ratio_pct > 0 else float("inf")
+        if fee_ratio > max_fee_ratio:
+            logger.warning(
+                "{} skipping — fees {:.1f}%% of risk exceeds max_fee_ratio_pct={:.0f}%% "
+                "(SL too tight for current position size)",
+                symbol, fee_ratio * 100, settings.max_fee_ratio_pct,
+            )
+            return None
+
         # ── Final margin safety check ─────────────────────────────────────
         # Ensure margin + all estimated fees do not exceed 95% of free tradeable balance.
         # The 5% micro-buffer guards against exchange fee rounding and funding

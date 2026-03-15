@@ -76,6 +76,10 @@ class Settings(BaseSettings):
     # (adds ~0.02% for spread/slippage on altcoins).
     # Used to warn when round-trip fees eat a large fraction of the risk budget.
     taker_fee_pct: float = 0.06
+    # Hard-skip a trade when estimated fees exceed this % of total risk budget.
+    # Trades with fee_ratio > threshold are effectively unprofitable given R:R.
+    # Set to 0 to disable (warn only). Default: 40 = skip if fees > 40% of risk.
+    max_fee_ratio_pct: float = 40.0
 
     # Funding fee safety estimation.
     # Futures positions pay funding every 8 h.  These fields let the risk manager

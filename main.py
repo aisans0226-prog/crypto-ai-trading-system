@@ -693,7 +693,10 @@ class TradingSystem:
                         # ── Stage 2: Increment confirmation count ──────────
                         entry = self._watchlist[signal.symbol]
                         entry.signal = signal        # refresh with latest scores
-                        entry.confirmations += 1
+                        # Cap at threshold — prevents counter exceeding limit when
+                        # trade slot is full and entry stays in watchlist for retry
+                        if entry.confirmations < settings.effective_watchlist_confirmations:
+                            entry.confirmations += 1
                         logger.info(
                             "📡 Watchlist confirm: {} | {}/{} | score={}",
                             signal.symbol, entry.confirmations,
