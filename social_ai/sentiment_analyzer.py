@@ -11,6 +11,7 @@ Signal contribution: +1 if score ≥ 0.3
 """
 import asyncio
 import re
+import time
 from typing import List, Optional, Tuple
 import aiohttp
 from loguru import logger
@@ -24,6 +25,11 @@ except ImportError:
 from config import settings
 
 
+_SENTIMENT_CACHE_TTL = 600  # reuse per-symbol result for 10 min across scan cycles
+_REDDIT_CIRCUIT_BREAK_AFTER = 3   # consecutive failures before disabling Reddit
+_REDDIT_COOLDOWN_SECS       = 900  # 15 min cooldown after circuit trip
+
+
 class SentimentAnalyzer:
     CRYPTO_TERMS = [
         "pump", "moon", "bullish", "buy", "long",
@@ -33,6 +39,11 @@ class SentimentAnalyzer:
     def __init__(self) -> None:
         self._vader = SentimentIntensityAnalyzer() if VADER_AVAILABLE else None
         self._session: Optional[aiohttp.ClientSession] = None
+        # Per-symbol result cache {symbol: (timestamp, score, signals)}
+        self._cache: dict = {}
+        # Reddit circuit-breaker state
+        self._reddit_fail_streak = 0
+        self._reddit_disabled_until = 0.0
 
     async def start(self) -> None:
         self._session = aiohttp.ClientSession(
@@ -46,6 +57,12 @@ class SentimentAnalyzer:
     # ── Public API ────────────────────────────────────────────────────────
     async def get_sentiment_score(self, symbol: str) -> Tuple[float, List[str]]:
         """Return (composite_score, list_of_signals)."""
+        # Check per-symbol TTL cache to avoid repeated slow fetches across cycles
+        now = time.time()
+        cached = self._cache.get(symbol)
+        if cached and now - cached[0] < _SENTIMENT_CACHE_TTL:
+            return cached[1], cached[2]
+
         coin = symbol.replace("USDT", "").replace("PERP", "").lower()
 
         scores = []
@@ -61,6 +78,7 @@ class SentimentAnalyzer:
         texts.extend(reddit_texts)
 
         if not texts:
+            self._cache[symbol] = (now, 0.0, [])
             return 0.0, []
 
         for text in texts:
@@ -75,7 +93,9 @@ class SentimentAnalyzer:
         elif avg <= -0.3:
             signals.append("negative_sentiment")
 
-        return round(avg, 4), signals
+        result_score = round(avg, 4)
+        self._cache[symbol] = (now, result_score, signals)
+        return result_score, signals
 
     # ── Twitter fetch ─────────────────────────────────────────────────────
     async def _fetch_twitter(self, coin: str) -> List[str]:
@@ -101,6 +121,10 @@ class SentimentAnalyzer:
     async def _fetch_reddit(self, coin: str) -> List[str]:
         if not self._session:
             return []
+        # Circuit breaker: skip Reddit if it has been repeatedly failing
+        now = time.time()
+        if now < self._reddit_disabled_until:
+            return []
         url = "https://www.reddit.com/search.json"
         params = {"q": coin, "sort": "new", "limit": 15, "t": "day"}
         headers = {"User-Agent": "CryptoBot/1.0"}
@@ -109,12 +133,23 @@ class SentimentAnalyzer:
                 if r.status == 200:
                     data = await r.json()
                     posts = data.get("data", {}).get("children", [])
+                    self._reddit_fail_streak = 0  # reset on success
                     return [
                         p["data"].get("title", "") + " " + p["data"].get("selftext", "")
                         for p in posts
                     ]
+                # Non-200 (e.g. 429, 403) treated as failure
+                self._reddit_fail_streak += 1
         except Exception as exc:
             logger.debug("Reddit fetch error: {}", exc)
+            self._reddit_fail_streak += 1
+        if self._reddit_fail_streak >= _REDDIT_CIRCUIT_BREAK_AFTER:
+            self._reddit_disabled_until = time.time() + _REDDIT_COOLDOWN_SECS
+            logger.info(
+                "Reddit circuit-breaker tripped after {} failures — pausing {}s",
+                self._reddit_fail_streak, _REDDIT_COOLDOWN_SECS,
+            )
+            self._reddit_fail_streak = 0
         return []
 
     # ── Scoring ───────────────────────────────────────────────────────────
