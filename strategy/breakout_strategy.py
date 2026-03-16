@@ -34,7 +34,7 @@ class BreakoutStrategy:
 
             avg_vol = volume.rolling(20).mean().iloc[-1]
             last_vol = volume.iloc[-1]
-            volume_confirm = last_vol >= avg_vol * 1.5
+            volume_confirm = last_vol >= avg_vol * 1.2  # lowered from 1.5×
 
             atr = ta.volatility.AverageTrueRange(
                 high=high, low=low, close=close, window=14

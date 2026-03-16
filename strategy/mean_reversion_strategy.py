@@ -18,8 +18,8 @@ from strategy.trend_strategy import TradeSetup
 
 class MeanReversionStrategy:
     NAME = "MEAN_REVERSION"
-    RSI_LONG  = 32
-    RSI_SHORT = 68
+    RSI_LONG  = 38  # widened from 32; catches broader oversold zone
+    RSI_SHORT = 62  # widened from 68; catches broader overbought zone
 
     def evaluate(self, symbol: str, df: pd.DataFrame) -> Optional[TradeSetup]:
         try:
@@ -46,7 +46,7 @@ class MeanReversionStrategy:
             # ── LONG: oversold bounce off lower band ──────────────────────────
             if (
                 rsi.iloc[-1] <= self.RSI_LONG
-                and c <= bb_lower.iloc[-1] * 1.002   # within 0.2 % of lower band
+                and c <= bb_lower.iloc[-1] * 1.005   # within 0.5 % of lower band (from 0.2 %)
                 and c > prev_c                        # bullish reversal candle
             ):
                 stop = low.iloc[-1] - 1.5 * atr_val
@@ -67,7 +67,7 @@ class MeanReversionStrategy:
             # ── SHORT: overbought rejection off upper band ───────────────────
             if (
                 rsi.iloc[-1] >= self.RSI_SHORT
-                and c >= bb_upper.iloc[-1] * 0.998
+                and c >= bb_upper.iloc[-1] * 0.995  # within 0.5 % of upper band (from 0.2 %)
                 and c < prev_c                        # bearish reversal candle
             ):
                 stop = high.iloc[-1] + 1.5 * atr_val

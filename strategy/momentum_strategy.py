@@ -1,11 +1,11 @@
 """
 strategy/momentum_strategy.py — Momentum burst strategy.
 
-Entry: 3+ consecutive bullish candles, price above all EMAs (9/20/50),
-       RSI 55–78, volume each candle ≥ 1.2× 20-period average.
+Entry: 2+ consecutive bullish candles (lowered from 3), price above all EMAs (9/20/50),
+       RSI 50–80 (widened from 55–78), volume each candle ≥ 1.1× 20-period average (from 1.2×).
 
-SL: 0.5× ATR below the first streak candle's open (capped at 2× ATR).
-TP: 2.5× ATR above entry.
+SL:  0.5× ATR below the first streak candle's open (capped at 2× ATR).
+TP:  2.5× ATR above entry.
 Direction: LONG only (burst is inherently directional upward).
 """
 from typing import Optional
@@ -19,7 +19,7 @@ from strategy.trend_strategy import TradeSetup
 
 class MomentumStrategy:
     NAME = "MOMENTUM"
-    MIN_STREAK = 3
+    MIN_STREAK = 2  # lowered from 3; 2 consecutive bullish candles required
 
     def evaluate(self, symbol: str, df: pd.DataFrame) -> Optional[TradeSetup]:
         try:
@@ -39,7 +39,7 @@ class MomentumStrategy:
 
             avg_vol = volume.rolling(20).mean().iloc[-1]
             for i in range(-self.MIN_STREAK, 0):
-                if volume.iloc[i] < avg_vol * 1.2:
+                if volume.iloc[i] < avg_vol * 1.1:  # lowered from 1.2×
                     return None
 
             ema9  = ta.trend.EMAIndicator(close=close, window=9).ema_indicator()
@@ -54,7 +54,7 @@ class MomentumStrategy:
 
             if not (ema9.iloc[-1] > ema20.iloc[-1] > ema50.iloc[-1] and c > ema9.iloc[-1]):
                 return None
-            if not (55 <= rsi.iloc[-1] <= 78):
+            if not (50 <= rsi.iloc[-1] <= 80):  # widened from 55–78
                 return None
 
             atr_val = atr.iloc[-1]

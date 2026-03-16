@@ -18,7 +18,7 @@ from strategy.trend_strategy import TradeSetup
 
 class LiquidityStrategy:
     NAME = "LIQUIDITY_SWEEP"
-    WICK_RATIO_THRESHOLD = 0.6    # wick > 60 % of total candle range
+    WICK_RATIO_THRESHOLD = 0.4    # wick > 40 % of total candle range (lowered from 0.6)
 
     def evaluate(self, symbol: str, df: pd.DataFrame) -> Optional[TradeSetup]:
         try:

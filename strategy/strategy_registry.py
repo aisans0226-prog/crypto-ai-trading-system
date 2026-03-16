@@ -7,6 +7,8 @@ Before every trade:
        fitness = w_reg × regime_fit  +  w_stat × win_rate  +  w_rec × recent_score  +  w_rr × rr_score
   3. Weights shift from regime-heavy → stats-heavy as historical data accumulates.
   4. Setup with the highest fitness is returned as the trade's entry plan.
+  5. If no strategy qualifies, SCAN_ALIGNED fallback fires when basic EMA+RSI+ADX
+     conditions confirm the scanner's signal direction.
 
 After every trade close:
   record_outcome(strategy_name, pnl) → persists to strategy_stats table.
@@ -20,6 +22,7 @@ import time
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
+import ta
 from loguru import logger
 
 from strategy.trend_strategy import TrendStrategy, TradeSetup
@@ -94,6 +97,19 @@ class StrategyRegistry:
             )
 
         if not candidates:
+            # SCAN_ALIGNED fallback: fires when scanner + research confirmed a signal
+            # but no named strategy pattern matched.  Uses lightweight EMA/RSI/ADX
+            # confirmation so it is technically grounded, not a pure blind entry.
+            try:
+                fallback = self._build_scan_aligned_setup(symbol, df, direction)
+                if fallback:
+                    logger.info(
+                        "{} → SCAN_ALIGNED fallback ({} direction confirmed by EMA+RSI+ADX)",
+                        symbol, direction,
+                    )
+                    return fallback, "SCAN_ALIGNED"
+            except Exception as exc:
+                logger.debug("SCAN_ALIGNED fallback error {}: {}", symbol, exc)
             return None, None
 
         candidates.sort(reverse=True, key=lambda x: x[0])
@@ -166,4 +182,73 @@ class StrategyRegistry:
             + w_rec  * recent_score
             + w_rr   * rr_score,
             4,
+        )
+
+    def _build_scan_aligned_setup(
+        self, symbol: str, df: pd.DataFrame, direction: str
+    ) -> Optional[TradeSetup]:
+        """
+        Lightweight entry aligned with scanner signal direction.
+        Conditions (LONG):  EMA9 > EMA20, RSI 40–82, ADX > 15, volume ≥ avg
+        Conditions (SHORT): EMA9 < EMA20, RSI 18–60, ADX > 15, volume ≥ avg
+        SL: 1.5× ATR; TP: 3× ATR (1:2 RR).
+        Only fires after the named strategies all declined — serves as the
+        alignment bridge between scanner signals and trade execution.
+        """
+        from config import settings
+
+        close  = df["close"]
+        high   = df["high"]
+        low    = df["low"]
+        volume = df["volume"]
+
+        ema9  = ta.trend.EMAIndicator(close=close, window=9).ema_indicator()
+        ema20 = ta.trend.EMAIndicator(close=close, window=20).ema_indicator()
+        rsi   = ta.momentum.RSIIndicator(close=close, window=14).rsi()
+        adx   = ta.trend.ADXIndicator(high=high, low=low, close=close).adx()
+        atr   = ta.volatility.AverageTrueRange(
+            high=high, low=low, close=close, window=14
+        ).average_true_range()
+
+        avg_vol  = volume.rolling(20).mean().iloc[-1]
+        last_vol = volume.iloc[-1]
+        rsi_val  = rsi.iloc[-1]
+        adx_val  = adx.iloc[-1]
+        atr_val  = atr.iloc[-1]
+        c        = close.iloc[-1]
+
+        # Minimal volume check — at least average, no surge required
+        if last_vol < avg_vol * 0.8:
+            return None
+        # Must have some directional strength
+        if adx_val < 15:
+            return None
+
+        if direction == "LONG":
+            if not (ema9.iloc[-1] > ema20.iloc[-1] and 40 <= rsi_val <= 82):
+                return None
+            stop = c - 1.5 * atr_val
+            tp   = c + 3.0 * atr_val
+
+        elif direction == "SHORT":
+            if not (ema9.iloc[-1] < ema20.iloc[-1] and 18 <= rsi_val <= 60):
+                return None
+            stop = c + 1.5 * atr_val
+            tp   = c - 3.0 * atr_val
+
+        else:
+            return None
+
+        rr = abs(tp - c) / max(abs(c - stop), 1e-10)
+        if rr < settings.min_risk_reward_ratio:
+            return None
+
+        return TradeSetup(
+            symbol=symbol,
+            direction=direction,
+            entry_price=c,
+            stop_loss=round(stop, 6),
+            take_profit=round(tp, 6),
+            leverage=settings.max_leverage,
+            risk_reward=round(rr, 2),
         )

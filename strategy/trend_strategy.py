@@ -4,9 +4,9 @@ strategy/trend_strategy.py — EMA trend-following strategy.
 Entry conditions (all must be true):
   - EMA9 > EMA20 > EMA50 (bullish alignment)
   - Close above EMA20
-  - RSI 45–70
-  - MACD histogram positive and rising
-  - ADX > 25 (strong trend)
+  - RSI 42–75 (widened from 45–70)
+  - MACD histogram positive (rising condition removed)
+  - ADX > 18 (lowered from 25; catches moderate trends)
 
 Returns: direction, entry, stop_loss, take_profit
 """
@@ -56,10 +56,9 @@ class TrendStrategy:
             if (
                 ema9.iloc[-1] > ema20.iloc[-1] > ema50.iloc[-1]
                 and c > ema20.iloc[-1]
-                and 45 <= rsi.iloc[-1] <= 70
-                and macd_hist.iloc[-1] > 0
-                and macd_hist.iloc[-1] > macd_hist.iloc[-2]
-                and adx.iloc[-1] > 25
+                and 42 <= rsi.iloc[-1] <= 75
+                and macd_hist.iloc[-1] > 0          # positive MACD (rising not required)
+                and adx.iloc[-1] > 18               # moderate trend sufficient
             ):
                 atr_val = atr.iloc[-1]
                 stop = c - 1.5 * atr_val
@@ -77,10 +76,9 @@ class TrendStrategy:
             if (
                 ema9.iloc[-1] < ema20.iloc[-1] < ema50.iloc[-1]
                 and c < ema20.iloc[-1]
-                and 30 <= rsi.iloc[-1] <= 55
-                and macd_hist.iloc[-1] < 0
-                and macd_hist.iloc[-1] < macd_hist.iloc[-2]
-                and adx.iloc[-1] > 25
+                and 25 <= rsi.iloc[-1] <= 58
+                and macd_hist.iloc[-1] < 0          # negative MACD (falling not required)
+                and adx.iloc[-1] > 18               # moderate trend sufficient
             ):
                 atr_val = atr.iloc[-1]
                 stop = c + 1.5 * atr_val
