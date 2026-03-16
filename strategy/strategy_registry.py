@@ -189,20 +189,18 @@ class StrategyRegistry:
     ) -> Optional[TradeSetup]:
         """
         Lightweight entry aligned with scanner signal direction.
-        Conditions (LONG):  EMA9 > EMA20, RSI 40–82, ADX > 15, volume ≥ avg
-        Conditions (SHORT): EMA9 < EMA20, RSI 18–60, ADX > 15, volume ≥ avg
+        Conditions (LONG):  close > EMA20, RSI 38–85, ADX > 12
+        Conditions (SHORT): close < EMA20, RSI 15–62, ADX > 12
+        Volume and EMA9>EMA20 checks removed — scanner already confirmed momentum;
+        we just need price direction + RSI sanity + any non-flat trend.
         SL: 1.5× ATR; TP: 3× ATR (1:2 RR).
-        Only fires after the named strategies all declined — serves as the
-        alignment bridge between scanner signals and trade execution.
         """
         from config import settings
 
         close  = df["close"]
         high   = df["high"]
         low    = df["low"]
-        volume = df["volume"]
 
-        ema9  = ta.trend.EMAIndicator(close=close, window=9).ema_indicator()
         ema20 = ta.trend.EMAIndicator(close=close, window=20).ema_indicator()
         rsi   = ta.momentum.RSIIndicator(close=close, window=14).rsi()
         adx   = ta.trend.ADXIndicator(high=high, low=low, close=close).adx()
@@ -210,28 +208,24 @@ class StrategyRegistry:
             high=high, low=low, close=close, window=14
         ).average_true_range()
 
-        avg_vol  = volume.rolling(20).mean().iloc[-1]
-        last_vol = volume.iloc[-1]
-        rsi_val  = rsi.iloc[-1]
-        adx_val  = adx.iloc[-1]
-        atr_val  = atr.iloc[-1]
-        c        = close.iloc[-1]
+        rsi_val = rsi.iloc[-1]
+        adx_val = adx.iloc[-1]
+        atr_val = atr.iloc[-1]
+        c       = close.iloc[-1]
+        ema20v  = ema20.iloc[-1]
 
-        # Minimal volume check — at least average, no surge required
-        if last_vol < avg_vol * 0.8:
-            return None
-        # Must have some directional strength
-        if adx_val < 15:
+        # Must have any trend (non-flat) — ADX 12 to exclude dead sideways
+        if adx_val < 12:
             return None
 
         if direction == "LONG":
-            if not (ema9.iloc[-1] > ema20.iloc[-1] and 40 <= rsi_val <= 82):
+            if not (c > ema20v and 38 <= rsi_val <= 85):
                 return None
             stop = c - 1.5 * atr_val
             tp   = c + 3.0 * atr_val
 
         elif direction == "SHORT":
-            if not (ema9.iloc[-1] < ema20.iloc[-1] and 18 <= rsi_val <= 60):
+            if not (c < ema20v and 15 <= rsi_val <= 62):
                 return None
             stop = c + 1.5 * atr_val
             tp   = c - 3.0 * atr_val
