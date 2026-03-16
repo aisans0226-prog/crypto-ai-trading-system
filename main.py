@@ -632,15 +632,20 @@ class TradingSystem:
                     except Exception as exc:
                         logger.debug("ML predict error {}: {}", signal.symbol, exc)
 
-                    # Sentiment boost
-                    try:
-                        sent_score, sent_signals = \
-                            await self._sentiment.get_sentiment_score(signal.symbol)
-                        if sent_score >= 0.3:
-                            signal.score += 1
-                            signal.signals.extend(sent_signals)
-                    except Exception:
-                        pass
+                    # Sentiment boost — only evaluated when score is within 1 pt of
+                    # threshold (sentiment contributes at most +1), or coin is already
+                    # in the watchlist (confirmation path). This prevents slow Reddit
+                    # fetches for signals that can't cross the threshold anyway.
+                    _thr = settings.effective_signal_score_threshold
+                    if in_watchlist or signal.score >= _thr - 1:
+                        try:
+                            sent_score, sent_signals = \
+                                await self._sentiment.get_sentiment_score(signal.symbol)
+                            if sent_score >= 0.3:
+                                signal.score += 1
+                                signal.signals.extend(sent_signals)
+                        except Exception:
+                            pass
 
                     # Re-check threshold after ML + sentiment
                     if not signal.is_high_probability:
