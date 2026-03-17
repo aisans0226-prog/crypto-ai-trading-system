@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     risk_per_trade_pct: float = 1.0        # 1% risk per trade
     max_leverage: int = 3
     max_open_trades: int = 6               # max simultaneous positions (reduced from 20 to prevent over-leverage)
-    min_risk_reward_ratio: float = 2.0
+    min_risk_reward_ratio: float = 1.5
     max_daily_trades: int = 3              # max trades bot can open per day
     max_daily_loss_pct: float = 5.0        # halt trading if daily realized loss >= 5% of balance
 
@@ -125,7 +125,7 @@ class Settings(BaseSettings):
 
     # AI Signal — stricter quality gates
     signal_score_threshold: int = 11       # raised from 8 → requires strong scanner score
-    min_ml_confidence: float = 0.60        # min ML confidence to confirm entry (when trained)
+    min_ml_confidence: float = 0.40        # min ML confidence gate (lowered from 0.60 — model WR ~43% was blocking all signals)
     signal_cooldown_minutes: int = 30      # cool-off after watchlist decision (trade or skip)
 
     # Watchlist / Research phase (confirm signal before researching)
