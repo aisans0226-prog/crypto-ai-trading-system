@@ -654,7 +654,7 @@ class TradingSystem:
                     # ML confidence gate — only enforced when model is trained (not default 0.5)
                     ml_trained = abs(signal.ai_prediction - 0.5) > 0.05
                     if ml_trained and signal.ai_prediction < settings.effective_min_ml_confidence:
-                        logger.debug(
+                        logger.info(
                             "{} ML confidence {:.2f} < gate {:.2f} — skip",
                             signal.symbol, signal.ai_prediction, settings.effective_min_ml_confidence,
                         )
@@ -1301,17 +1301,26 @@ class TradingSystem:
                 tp = float(pos_data.get("take_profit", 0))
                 qty = float(pos_data.get("quantity", 0))
 
-                # Use candle extremes: low for LONG SL / SHORT TP, high for LONG TP / SHORT SL
+                # Guard: skip candle-wick SL/TP for positions < 120s old to avoid
+                # instant hits caused by stale klines cache retaining prior candle's wick
+                meta = self._position_meta.get(symbol, {})
+                opened_at = meta.get("opened_at", 0) or 0
+                position_age_secs = time.time() - opened_at
+                _MIN_HOLD_SECS = 120
+                eff_high = candle_high if position_age_secs >= _MIN_HOLD_SECS else current_price
+                eff_low  = candle_low  if position_age_secs >= _MIN_HOLD_SECS else current_price
+
+                # Use candle extremes (once position is seasoned): low for LONG SL, high for LONG TP
                 hit_price = None
                 if direction == "LONG":
-                    if sl > 0 and candle_low <= sl:
+                    if sl > 0 and eff_low <= sl:
                         hit_price = sl
-                    elif tp > 0 and candle_high >= tp:
+                    elif tp > 0 and eff_high >= tp:
                         hit_price = tp
                 else:
-                    if sl > 0 and candle_high >= sl:
+                    if sl > 0 and eff_high >= sl:
                         hit_price = sl
-                    elif tp > 0 and candle_low <= tp:
+                    elif tp > 0 and eff_low <= tp:
                         hit_price = tp
 
                 if hit_price:

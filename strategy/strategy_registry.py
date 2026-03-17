@@ -189,10 +189,10 @@ class StrategyRegistry:
     ) -> Optional[TradeSetup]:
         """
         Lightweight entry aligned with scanner signal direction.
-        Conditions (LONG):  close > EMA20, RSI 38–85, ADX > 12
-        Conditions (SHORT): close < EMA20, RSI 15–62, ADX > 12
-        Volume and EMA9>EMA20 checks removed — scanner already confirmed momentum;
-        we just need price direction + RSI sanity + any non-flat trend.
+        EMA20 direction check removed — research engine + MTF alignment already
+        validated direction before this fallback fires.
+        Conditions (LONG):  RSI 15–95, ADX > 8
+        Conditions (SHORT): RSI 5–80, ADX > 8
         SL: 1.5× ATR; TP: 3× ATR (1:2 RR).
         """
         from config import settings
@@ -201,7 +201,6 @@ class StrategyRegistry:
         high   = df["high"]
         low    = df["low"]
 
-        ema20 = ta.trend.EMAIndicator(close=close, window=20).ema_indicator()
         rsi   = ta.momentum.RSIIndicator(close=close, window=14).rsi()
         adx   = ta.trend.ADXIndicator(high=high, low=low, close=close).adx()
         atr   = ta.volatility.AverageTrueRange(
@@ -212,20 +211,19 @@ class StrategyRegistry:
         adx_val = adx.iloc[-1]
         atr_val = atr.iloc[-1]
         c       = close.iloc[-1]
-        ema20v  = ema20.iloc[-1]
 
-        # Must have any trend (non-flat) — ADX 12 to exclude dead sideways
-        if adx_val < 12:
+        # Must have any trend (non-flat) — ADX 8 excludes only completely dead markets
+        if adx_val < 8:
             return None
 
         if direction == "LONG":
-            if not (c > ema20v and 38 <= rsi_val <= 85):
+            if not (15 <= rsi_val <= 95):
                 return None
             stop = c - 1.5 * atr_val
             tp   = c + 3.0 * atr_val
 
         elif direction == "SHORT":
-            if not (c < ema20v and 15 <= rsi_val <= 62):
+            if not (5 <= rsi_val <= 80):
                 return None
             stop = c + 1.5 * atr_val
             tp   = c - 3.0 * atr_val
